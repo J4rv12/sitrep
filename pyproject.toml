@@ -1,0 +1,20 @@
+# Tool configuration only. There is no [build-system] section because SitRep
+# is a deployed service, not a package anyone installs.
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes — undefined names, unused imports
+    "I",   # isort — import ordering
+    "B",   # flake8-bugbear — likely bugs
+    "UP",  # pyupgrade — keeps us on 3.12 idioms
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"

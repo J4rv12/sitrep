@@ -1,0 +1,9 @@
+# Runtime dependencies. Six, per CLAUDE.md section 4 — do not expand.
+# Pinned exactly: Render rebuilds on every push, and an unpinned transitive
+# bump is a deploy that breaks without a commit to blame it on.
+anthropic==1.2.0
+fastapi==0.141.1
+httpx==0.28.1
+pydantic==2.13.5
+pydantic-settings==2.15.0
+uvicorn==0.52.4
