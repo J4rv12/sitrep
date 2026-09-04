@@ -17,6 +17,22 @@ jobs:
           python-version-file: .python-version
           cache: pip
 
+      # Render installs requirements.txt and nothing else. Install it alone
+      # first and import the app, which is what uvicorn does at boot. A
+      # runtime dependency misfiled into requirements-dev.txt fails here
+      # instead of on Render. Ordering alone would not catch it —
+      # requirements-dev.txt includes requirements.txt, so the dev install is
+      # a superset and pytest would import the misfiled package regardless.
+      - run: pip install -r requirements.txt
+
+      - name: app boots on runtime dependencies alone
+        env:
+          # get_settings() runs at import time and there is no .env here.
+          # conftest.py does not apply to a bare python -c.
+          WEBHOOK_TOKEN: ci-smoke-token
+          ANTHROPIC_API_KEY: sk-ant-ci-smoke
+        run: python -c "import app.main"
+
       - run: pip install -r requirements-dev.txt
 
       - run: ruff check .
