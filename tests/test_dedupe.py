@@ -12,6 +12,7 @@ import pytest
 
 from app.dedupe import DedupeCache, compute_alert_id
 from app.schemas import AlertPayload
+from conftest import FakeClock
 
 BASE = {
     "symbol": "BTCUSDT",
@@ -23,20 +24,6 @@ BASE = {
 
 def payload(**overrides: object) -> AlertPayload:
     return AlertPayload(**(BASE | overrides))
-
-
-class FakeClock:
-    """A monotonic clock you control. Starts at an arbitrary non-zero value
-    so an implementation that treats 0.0 as "never seen" fails here."""
-
-    def __init__(self, now: float = 10_000.0) -> None:
-        self.now = now
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
 
 
 # --- compute_alert_id -------------------------------------------------------
