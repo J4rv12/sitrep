@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-haiku-4-5-20251001"
     daily_spend_cap_usd: float = 1.00
     dedupe_ttl_seconds: int = 300  # Invariant 5: a 5-minute dedupe window.
-    binance_base_url: str = "https://api.binance.com"
+    # Binance's market-data-only host: public endpoints, no auth, which is all
+    # we call. Also reachable where api.binance.com is blocked at the ISP.
+    binance_base_url: str = "https://data-api.binance.vision"
     http_timeout_seconds: float = 5.0
     demo_rate_limit_per_hour: int = 20
     log_level: str = "INFO"

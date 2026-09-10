@@ -75,7 +75,8 @@ still matters.
 
 ### Market data
 
-One function. `GET https://api.binance.com/api/v3/klines` via httpx, returning two numbers:
+One function. `GET https://data-api.binance.vision/api/v3/klines` via httpx, returning two
+numbers:
 
 - **volume vs the 20-day average** — conviction
 - **% distance from the 20MA** — extension
@@ -83,6 +84,10 @@ One function. `GET https://api.binance.com/api/v3/klines` via httpx, returning t
 No ATR, no provider interface, no abstraction layer. Crypto rather than equities because stock
 markets are closed roughly 80% of the time, and the demo must show live data at any hour. On
 failure: return `None`, log a reason code, continue.
+
+`data-api.binance.vision`, not `api.binance.com`: it is Binance's market-data-only host, which is
+all SitRep calls, and ISP-level DNS blocks on `api.binance.com` have been hit in development. The
+URL lives in `config.py`, never at call sites.
 
 ### Claude API
 
