@@ -50,8 +50,8 @@ Violating any of these is a bug regardless of test status.
    alert. A product decision, not a disclaimer.
 3. **Structured output only.** Every LLM response parses into a Pydantic model before it
    reaches the formatter. Free text is a failure path, not a fallback.
-4. **Degrade, never drop.** Enrichment fails → brief without context. Claude fails after
-   retries → deliver the raw alert tagged `[unenriched]`. Every degradation path logs a reason
+4. **Degrade, never drop.** Enrichment fails → skip Claude and deliver the raw alert tagged
+   `[unenriched]`. Claude fails after retries → the same. Every degradation path logs a reason
    code and has a test.
 5. **Idempotency.** `alert_id = sha256(symbol|timeframe|condition|bar_time)`, deduped for
    5 minutes. TradingView retries; duplicate messages are a visible defect.
