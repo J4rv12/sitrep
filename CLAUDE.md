@@ -55,8 +55,11 @@ Violating any of these is a bug regardless of test status.
    code and has a test.
 5. **Idempotency.** `alert_id = sha256(symbol|timeframe|condition|bar_time)`, deduped for
    5 minutes. TradingView retries; duplicate messages are a visible defect.
-6. **Cost ceiling.** One LLM call per alert. Hard per-day spend cap from config. Demo endpoint
-   rate-limited by IP. On cap, serve a cached example and say so plainly.
+6. **Cost ceiling.** One LLM call per alert, plus at most one retry for a response that fails
+   validation or the advice guard; both are billed. Hard monthly spend limit on SitRep's
+   workspace in the Anthropic Console. A per-day cap from config stops bursts within one process
+   and resets on restart. Demo endpoint rate-limited by IP. On either cap, serve a cached example
+   and say so plainly.
 
 ---
 
