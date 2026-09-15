@@ -33,6 +33,26 @@ class Settings(BaseSettings):
 
     # --- Operational settings. Not secret, so defaults are safe here. ---
     anthropic_model: str = "claude-haiku-4-5-20251001"
+    # The pinned model's list price. Change these together with the model, or
+    # the spend ledger silently counts the wrong dollars.
+    anthropic_input_usd_per_mtok: float = 1.00
+    anthropic_output_usd_per_mtok: float = 5.00
+    # Upper bound on one call's input, for the spend ledger's worst case. brief_v1
+    # measured 1,223 tokens on 2026-09-15 with a 16-character condition; the
+    # longest alert AlertPayload allows adds a few hundred. Re-measure whenever the
+    # prompt changes; tests/test_llm.py fails if a recording exceeds this.
+    anthropic_max_input_tokens: int = 2000
+    # A full brief is ~300 tokens of JSON. A truncated one is invalid JSON and
+    # costs a retry, so leave headroom rather than trimming this to fit.
+    anthropic_max_tokens: int = 1024
+    # The SDK's default is ten minutes. The SDK also retries a timeout twice,
+    # so one attempt can take up to three times this.
+    anthropic_timeout_seconds: float = 20.0
+    # Invariant 6 is one call per alert; a second attempt is allowed only for a
+    # response that fails validation or the advice guard. Both are billed.
+    llm_max_attempts: int = 2
+    # Per process, so a restart resets it. The hard cap is the monthly spend
+    # limit on SitRep's workspace in the Anthropic Console.
     daily_spend_cap_usd: float = 1.00
     dedupe_ttl_seconds: int = 300  # Invariant 5: a 5-minute dedupe window.
     # Binance's market-data-only host: public endpoints, no auth, which is all
