@@ -20,7 +20,10 @@ the test, not model output.
 """
 
 import json
+import logging
+import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import anthropic
@@ -272,3 +275,253 @@ def test_worst_case_is_a_ceiling_on_the_recorded_call() -> None:
 
     assert usage["input_tokens"] <= get_settings().anthropic_max_input_tokens
     assert llm.worst_case_cost_usd() >= llm.cost_usd(usage["input_tokens"], usage["output_tokens"])
+
+
+# --- SpendLedger: yours -----------------------------------------------------
+
+NOON = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
+
+
+class WallClock:
+    """A wall clock you control, for the ledger's day boundary."""
+
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def test_charges_are_accepted_up_to_exactly_the_cap() -> None:
+    ledger = llm.SpendLedger(cap_usd=1.0, clock=WallClock(NOON))
+
+    assert ledger.try_spend(0.5) is True
+    assert ledger.try_spend(0.5) is True, "a total exactly at the cap is within it"
+    assert ledger.try_spend(0.25) is False
+
+
+def test_refused_charge_is_not_recorded() -> None:
+    ledger = llm.SpendLedger(cap_usd=1.0, clock=WallClock(NOON))
+
+    assert ledger.try_spend(0.75) is True
+    assert ledger.try_spend(0.5) is False
+    assert ledger.try_spend(0.25) is True, "the refused 0.5 must not count against the cap"
+
+
+def test_zero_cap_refuses_every_charge() -> None:
+    ledger = llm.SpendLedger(cap_usd=0.0, clock=WallClock(NOON))
+
+    assert ledger.try_spend(0.25) is False
+
+
+def test_total_starts_again_at_midnight_utc() -> None:
+    clock = WallClock(datetime(2026, 9, 15, 23, 59, tzinfo=UTC))
+    ledger = llm.SpendLedger(cap_usd=1.0, clock=clock)
+    assert ledger.try_spend(1.0) is True
+    assert ledger.try_spend(0.25) is False
+
+    clock.now = datetime(2026, 9, 16, 0, 0, tzinfo=UTC)
+
+    assert ledger.try_spend(0.25) is True
+
+
+def test_day_is_the_utc_day_whatever_the_clocks_timezone() -> None:
+    """00:30 in India on the 16th is 19:00 UTC on the 15th: the same day."""
+    clock = WallClock(datetime.fromisoformat("2026-09-15T23:30:00+05:30"))
+    ledger = llm.SpendLedger(cap_usd=1.0, clock=clock)
+    assert ledger.try_spend(1.0) is True
+
+    clock.now = datetime.fromisoformat("2026-09-16T00:30:00+05:30")
+
+    assert ledger.try_spend(0.25) is False, "the day turned over on local time, not UTC"
+
+
+# --- generate_brief: yours --------------------------------------------------
+
+UNUSABLE = recorded_with(severity="critical")
+ADVICE = recorded_with(headline="Strong buy setup on BTCUSDT.")
+SERVER_ERROR = api_error("api_error", "simulated")
+
+
+@pytest.fixture(autouse=True)
+def capture_llm_logs(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="app.llm")
+
+
+def llm_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [record for record in caplog.records if record.name == "app.llm"]
+
+
+def reasons(caplog: pytest.LogCaptureFixture) -> list[str | None]:
+    return [getattr(record, "reason", None) for record in llm_records(caplog)]
+
+
+def replying_in_turn(
+    *replies: tuple[int, bytes], seen: list[httpx2.Request]
+) -> anthropic.AsyncAnthropic:
+    """Answer the Nth request with the Nth reply. A request past the last fails the test."""
+    queue = list(replies)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        if not queue:
+            pytest.fail("generate_brief made more calls than this test scripted")
+        status, body = queue.pop(0)
+        return httpx2.Response(status, content=body, headers={"content-type": "application/json"})
+
+    return client_on(handler)
+
+
+async def test_good_reply_is_returned_after_one_call(caplog: pytest.LogCaptureFixture) -> None:
+    seen: list[httpx2.Request] = []
+
+    brief = await llm.generate_brief(
+        ALERT,
+        CONTEXT,
+        "alert-1",
+        client=replying_in_turn((200, RECORDED_BODY), seen=seen),
+        ledger=llm.SpendLedger(cap_usd=1.0),
+    )
+
+    assert brief == SignalBrief.model_validate_json(RECORDED_TEXT)
+    assert len(seen) == 1
+    (record,) = llm_records(caplog)
+    assert (record.levelname, record.alert_id, record.stage, record.outcome) == (
+        "INFO",
+        "alert-1",
+        "llm",
+        "ok",
+    )
+
+
+async def test_unusable_reply_is_tried_again(caplog: pytest.LogCaptureFixture) -> None:
+    seen: list[httpx2.Request] = []
+
+    brief = await llm.generate_brief(
+        ALERT,
+        CONTEXT,
+        "alert-1",
+        client=replying_in_turn((200, UNUSABLE), (200, RECORDED_BODY), seen=seen),
+        ledger=llm.SpendLedger(cap_usd=1.0),
+    )
+
+    assert brief == SignalBrief.model_validate_json(RECORDED_TEXT)
+    assert len(seen) == 2
+    assert [(r.outcome, getattr(r, "reason", None)) for r in llm_records(caplog)] == [
+        ("degraded", "llm_invalid_output"),
+        ("ok", None),
+    ]
+
+
+async def test_attempts_stop_at_the_configured_maximum(caplog: pytest.LogCaptureFixture) -> None:
+    attempts = get_settings().llm_max_attempts
+    seen: list[httpx2.Request] = []
+
+    brief = await llm.generate_brief(
+        ALERT,
+        CONTEXT,
+        "alert-1",
+        client=replying_in_turn(*[(200, ADVICE)] * attempts, seen=seen),
+        ledger=llm.SpendLedger(cap_usd=1.0),
+    )
+
+    assert brief is None
+    assert len(seen) == attempts
+    assert reasons(caplog) == ["advice_detected"] * attempts
+
+
+async def test_final_failure_is_not_tried_again(caplog: pytest.LogCaptureFixture) -> None:
+    seen: list[httpx2.Request] = []
+
+    brief = await llm.generate_brief(
+        ALERT,
+        CONTEXT,
+        "alert-1",
+        client=replying_in_turn((500, SERVER_ERROR), seen=seen),
+        ledger=llm.SpendLedger(cap_usd=1.0),
+    )
+
+    assert brief is None
+    assert len(seen) == 1
+    assert reasons(caplog) == ["llm_status_500"]
+
+
+async def test_spent_cap_means_no_call_at_all(caplog: pytest.LogCaptureFixture) -> None:
+    seen: list[httpx2.Request] = []
+
+    brief = await llm.generate_brief(
+        ALERT,
+        CONTEXT,
+        "alert-1",
+        client=replying_in_turn(seen=seen),
+        ledger=llm.SpendLedger(cap_usd=0.0),
+    )
+
+    assert brief is None
+    assert seen == []
+    (record,) = llm_records(caplog)
+    assert (record.levelname, record.outcome, record.reason) == (
+        "WARNING",
+        "degraded",
+        "spend_cap_reached",
+    )
+
+
+async def test_each_attempt_is_charged_the_worst_case(caplog: pytest.LogCaptureFixture) -> None:
+    """Room for exactly one worst-case attempt, so the retry is refused before it calls.
+
+    Also pins the amount. Charge less and the retry goes ahead and fails this
+    test; charge more and the first attempt never happens.
+    """
+    seen: list[httpx2.Request] = []
+
+    brief = await llm.generate_brief(
+        ALERT,
+        CONTEXT,
+        "alert-1",
+        client=replying_in_turn((200, UNUSABLE), seen=seen),
+        ledger=llm.SpendLedger(cap_usd=llm.worst_case_cost_usd()),
+    )
+
+    assert brief is None
+    assert len(seen) == 1
+    assert reasons(caplog) == ["llm_invalid_output", "spend_cap_reached"]
+
+
+async def test_retry_does_not_wait() -> None:
+    started = time.perf_counter()
+
+    await llm.generate_brief(
+        ALERT,
+        CONTEXT,
+        "alert-1",
+        client=replying_in_turn((200, UNUSABLE), (200, RECORDED_BODY), seen=[]),
+        ledger=llm.SpendLedger(cap_usd=1.0),
+    )
+
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.9, f"took {elapsed:.2f} s; a schema failure is not load, retry at once"
+
+
+def test_production_ledger_exists() -> None:
+    """`generate_brief` falls back to this when no ledger is passed."""
+    assert isinstance(llm._ledger, llm.SpendLedger)
+
+
+async def test_passing_a_ledger_leaves_the_production_ledger_alone() -> None:
+    """Added in review. A ledger passed for one call must not replace the default.
+
+    Otherwise the last caller to pass a ledger decides the budget for every
+    later call that passes none.
+    """
+    production = llm._ledger
+
+    await llm.generate_brief(
+        ALERT,
+        CONTEXT,
+        "alert-1",
+        client=replying_in_turn(seen=[]),
+        ledger=llm.SpendLedger(cap_usd=0.0),
+    )
+
+    assert llm._ledger is production

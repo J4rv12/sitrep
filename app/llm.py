@@ -9,9 +9,20 @@ the API as a JSON schema, so the model's reply is constrained to that shape.
 The API cannot enforce `max_length` or list lengths, so the SDK strips those
 from the schema it sends and checks them itself when the reply arrives,
 raising `pydantic.ValidationError`. Free text never reaches the formatter.
+
+`generate_brief` is what the pipeline calls. It owns the decisions
+`request_brief` does not make: whether today's spend allows another attempt,
+whether a failure is worth a second one, and the log line for each.
+
+Names you will need that are not imported yet: `logging`, `time`, `UTC` from
+datetime, and `log_event` from app.logs.
 """
 
 import html
+import logging
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -20,6 +31,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.guards import find_advice
+from app.logs import log_event
 from app.schemas import AlertPayload, MarketContext, SignalBrief
 
 PROMPT_VERSION = "brief_v1"
@@ -34,6 +46,8 @@ SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / f"{PROMPT_VERSION}.md").rea
 # this, for both the organization and a workspace. It carries no error code,
 # so the message prefix is the only documented signal.
 _SPEND_LIMIT_PREFIX = "You have reached your specified"
+
+logger = logging.getLogger(__name__)
 
 
 class BriefFailed(Exception):
@@ -177,3 +191,145 @@ async def request_brief(
         raise BriefFailed("advice_detected", retry=True, detail=phrase)
 
     return brief, cost_usd(response.usage.input_tokens, response.usage.output_tokens)
+
+
+class SpendLedger:
+    """Today's charges against the daily cap, in this process. Invariant 6.
+
+    The caller charges the worst case before every attempt, and nothing is
+    ever refunded. Real calls cost less, so the cap trips early. In exchange,
+    checking and recording happen in one step with no `await` between them,
+    so no number of attempts in flight can take the total past the cap. Same
+    shape as `DedupeCache.seen_before`, for the same reason.
+
+    In memory, per process: a restart starts the day at zero. The hard cap is
+    the monthly spend limit on SitRep's workspace in the Anthropic Console.
+    """
+
+    def __init__(self, cap_usd: float, clock: Callable[[], datetime] | None = None) -> None:
+        """Build a ledger with nothing charged.
+
+        `cap_usd` comes from `get_settings().daily_spend_cap_usd`. The caller
+        reads config, not this class. A cap of 0 refuses every charge, which
+        makes `DAILY_SPEND_CAP_USD=0` a switch that turns Claude off.
+
+        `clock` is a zero-argument callable returning a timezone-aware
+        datetime. Default it to the current time in UTC. The day turns over
+        at 00:00 UTC, whatever timezone the server runs in.
+        """
+        self._cap_usd = cap_usd
+        self._clock = clock if clock is not None else lambda: datetime.now(UTC)
+        self._ledger: dict[str, float] = {str(self._clock().astimezone(UTC).date()): 0.0}
+
+    def try_spend(self, amount_usd: float) -> bool:
+        """Charge `amount_usd` and return True if today's total stays within the cap.
+
+        Otherwise charge nothing and return False. A total exactly equal to
+        the cap is within it. A refused charge must leave the total as it
+        was, or one refusal would block smaller charges that still fit.
+
+        Each UTC date keeps its own total. A charge counts against the total
+        for the clock's current UTC date, which starts at zero the first time
+        that date is seen. If the clock is ever set back across midnight, the
+        earlier date's total still applies.
+
+        Floats are fine for a cap that needs no cent-exact arithmetic. The
+        tests use amounts that are exact in binary, like 0.25, so the
+        exactly-at-the-cap case can be asserted without rounding.
+        """
+        date_string = str(self._clock().astimezone(UTC).date())
+
+        if date_string not in self._ledger:
+            self._ledger[date_string] = 0.0
+
+        if self._cap_usd >= (amount_usd + self._ledger[date_string]):
+            self._ledger[date_string] += amount_usd
+            return True
+
+        return False
+
+
+_ledger = SpendLedger(get_settings().daily_spend_cap_usd)
+
+
+async def generate_brief(
+    payload: AlertPayload,
+    context: MarketContext,
+    alert_id: str,
+    *,
+    client: anthropic.AsyncAnthropic | None = None,
+    ledger: SpendLedger | None = None,
+) -> SignalBrief | None:
+    """Return a brief for one alert, or None if the alert must ship unenriched.
+
+    Never raises for anything `request_brief` reports. None plus the log
+    lines is the entire failure contract; the pipeline decides nothing else.
+
+    Up to `llm_max_attempts` attempts. For each one:
+
+    1. `ledger.try_spend(worst_case_cost_usd())`. False means stop without
+       calling, reason `spend_cap_reached`. That is the daily cap in this
+       file, not `spend_limit_reached`, which is the Console refusing a call.
+    2. `request_brief`. A brief ends the loop and is returned.
+    3. `BriefFailed` with `retry` False ends the loop. With `retry` True, go
+       round again if attempts remain.
+
+    No sleep between attempts. Backoff gives an overloaded server time to
+    recover, and the SDK already applies it to 429s and 5xx. A reply that
+    broke the schema is not a symptom of load, so waiting would only delay
+    the alert.
+
+    Logs one line per attempt, a refused one included, with `log_event` on
+    `logging.getLogger(__name__)`: stage "llm", outcome "ok" or "degraded",
+    the reason code when degraded, and that attempt's latency.
+
+    `client` and `ledger` exist for tests. Production passes neither, so
+    default to `get_client()` and to a module-level `_ledger`. Build that
+    under this function from `get_settings().daily_spend_cap_usd`, the way
+    routes/webhook.py builds `_dedupe`.
+    """
+    client = client if client is not None else get_client()
+    ledger = ledger if ledger is not None else _ledger
+
+    for _ in range(get_settings().llm_max_attempts):
+        started = time.perf_counter()
+
+        if ledger.try_spend(worst_case_cost_usd()):
+            try:
+                brief, _ = await request_brief(payload=payload, context=context, client=client)
+
+                log_event(
+                    logger,
+                    alert_id=alert_id,
+                    stage="llm",
+                    outcome="ok",
+                    latency_ms=(time.perf_counter() - started) * 1000,
+                )
+
+                return brief
+
+            except BriefFailed as e:
+                log_event(
+                    logger,
+                    alert_id=alert_id,
+                    stage="llm",
+                    outcome="degraded",
+                    latency_ms=(time.perf_counter() - started) * 1000,
+                    reason=e.reason,
+                )
+
+                if e.retry:
+                    continue
+
+                return None
+
+        else:
+            log_event(
+                logger,
+                alert_id=alert_id,
+                stage="llm",
+                outcome="degraded",
+                latency_ms=(time.perf_counter() - started) * 1000,
+                reason="spend_cap_reached",
+            )
+            return None
