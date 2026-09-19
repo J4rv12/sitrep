@@ -159,7 +159,8 @@ sitrep/
 ### Conventions
 
 - Type hints everywhere. Public functions document what fails and how.
-- No bare `except`. Catch specific exceptions, log a reason code, degrade.
+- No bare `except`. Catch specific exceptions, log a reason code, degrade. The one broad
+  `except Exception` is the last-resort net in `process_alert`, and it logs the traceback.
 - All I/O async.
 - Config only via `config.py`. `os.getenv` anywhere else is a review rejection.
 - **Prompts are code** — versioned `.md` files in `app/prompts/`. Changing one requires
