@@ -84,7 +84,9 @@ async def process_alert(payload: AlertPayload, alert_id: str) -> SignalBrief | N
     reason "internal_error" with `exc_info=True` so the traceback is in the
     line, and return None. `asyncio.CancelledError` is not an `Exception`
     and must pass through: it is how the server stops this task at shutdown,
-    and swallowing it would keep the process alive with zombie tasks.
+    not a bug. Caught, every deploy that interrupted an alert in flight would
+    log an `internal_error` with a traceback, a false alarm indistinguishable
+    from a real one.
 
     This is the one broad `except` the manual allows (CLAUDE.md section 6).
     Nothing else in `app/` may copy it.
