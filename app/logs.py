@@ -56,8 +56,15 @@ def log_event(
     outcome: str,
     latency_ms: float,
     reason: str | None = None,
+    exc_info: bool = False,
 ) -> None:
-    """Log one pipeline event. WARNING when it carries a reason code, else INFO."""
+    """Log one pipeline event. WARNING when it carries a reason code, else INFO.
+
+    `exc_info=True` attaches the exception being handled and raises the
+    level to ERROR. Only for the last-resort net in `process_alert`: an
+    expected failure has a reason code and needs no traceback, and a line
+    that says `internal_error` without one hides the bug it caught.
+    """
     fields: dict[str, object] = {
         "alert_id": alert_id,
         "stage": stage,
@@ -67,4 +74,6 @@ def log_event(
     if reason is not None:
         fields["reason"] = reason
     level = logging.INFO if reason is None else logging.WARNING
-    logger.log(level, "%s %s", stage, outcome, extra=fields)
+    if exc_info:
+        level = logging.ERROR
+    logger.log(level, "%s %s", stage, outcome, extra=fields, exc_info=exc_info)

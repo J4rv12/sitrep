@@ -42,6 +42,38 @@ def test_event_is_one_json_line_carrying_the_required_fields() -> None:
     }
 
 
+def test_unexpected_failure_logs_the_traceback_at_error() -> None:
+    """The last-resort net's line must say what it caught, or it hides bugs."""
+    buffer = io.StringIO()
+    handler = logging.StreamHandler(buffer)
+    handler.setFormatter(JsonFormatter())
+    logger = logging.getLogger("tests.logs")
+    logger.addHandler(handler)
+    logger.propagate = False
+    try:
+        try:
+            raise ZeroDivisionError("simulated")
+        except ZeroDivisionError:
+            log_event(
+                logger,
+                alert_id="alert-1",
+                stage="pipeline",
+                outcome="degraded",
+                latency_ms=1.0,
+                reason="internal_error",
+                exc_info=True,
+            )
+    finally:
+        logger.removeHandler(handler)
+
+    (line,) = buffer.getvalue().splitlines()
+    entry = json.loads(line)
+    assert entry["level"] == "ERROR"
+    assert entry["reason"] == "internal_error"
+    assert "ZeroDivisionError: simulated" in entry["exc"]
+    assert "Traceback" in entry["exc"]
+
+
 def test_httpx_request_urls_stay_out_of_the_logs() -> None:
     """Telegram's Bot API puts the bot token in the URL, and httpx logs URLs at INFO.
 
