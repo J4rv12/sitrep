@@ -77,14 +77,16 @@ def test_unexpected_failure_logs_the_traceback_at_error() -> None:
 def test_httpx_request_urls_stay_out_of_the_logs() -> None:
     """Telegram's Bot API puts the bot token in the URL, and httpx logs URLs at INFO.
 
-    Drop the httpx line from `configure_logging` and this fails, because the
-    root logger is at INFO and httpx inherits it.
+    The anthropic SDK uses httpx2, whose logger is separate and does the same.
+    Drop either line from `configure_logging` and this fails, because the root
+    logger is at INFO and both inherit it.
     """
     root = logging.getLogger()
     saved_handlers, saved_level = root.handlers[:], root.level
     try:
         configure_logging("INFO")
         assert not logging.getLogger("httpx").isEnabledFor(logging.INFO)
+        assert not logging.getLogger("httpx2").isEnabledFor(logging.INFO)
     finally:
         root.handlers = saved_handlers
         root.setLevel(saved_level)

@@ -46,6 +46,10 @@ def configure_logging(level: str) -> None:
     # bot token in the URL, so at INFO every delivery would write the token
     # into Render's logs.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # The anthropic SDK sends through httpx2, a separate package with its own
+    # logger. Its URLs carry no secret, but each request would add a line with
+    # none of the event fields, one per Claude call.
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
 
 
 def log_event(
