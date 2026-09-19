@@ -28,11 +28,14 @@ interrupted between the dedupe check and the dedupe write. A plain `def`
 would be handed to a threadpool, where two simultaneous retries of the same
 alert can both pass the check and both deliver.
 
-Names you will need that are not imported yet: `HTTPException` from fastapi,
-`ValidationError` from pydantic, `compute_alert_id` from app.dedupe, and
-`token_is_valid` from app.security.
+`get_market_context` and `generate_brief` are imported by name on purpose.
+tests/test_webhook.py replaces `webhook.get_market_context` and
+`webhook.generate_brief`, which is what keeps the suite away from Binance and
+Anthropic. Reached through their modules instead, they would escape the patch.
 """
 
+import logging
+import time
 from json import JSONDecodeError
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -41,7 +44,10 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.dedupe import DedupeCache, compute_alert_id
-from app.schemas import AlertPayload
+from app.enrich import get_market_context
+from app.llm import generate_brief
+from app.logs import log_event
+from app.schemas import AlertPayload, SignalBrief
 from app.security import token_is_valid
 
 router = APIRouter(tags=["webhook"])
@@ -50,18 +56,60 @@ router = APIRouter(tags=["webhook"])
 # restart empties it and costs at most one duplicate message.
 _dedupe = DedupeCache(ttl_seconds=get_settings().dedupe_ttl_seconds)
 
+logger = logging.getLogger(__name__)
 
-async def process_alert(payload: AlertPayload, alert_id: str) -> None:
-    """Run the pipeline for one accepted alert. Stub until Phase 2.
 
-    This is the slow half — Binance, then Claude, then Telegram, several
-    seconds end to end. It runs *after* the response has been sent, which is
-    the entire reason invariant 1 holds.
+async def process_alert(payload: AlertPayload, alert_id: str) -> SignalBrief | None:
+    """Run the pipeline for one accepted alert; return its brief, or None.
 
-    Deliberately does nothing yet. tests/test_webhook.py replaces it to prove
-    the handler returns without waiting for it.
+    This is the slow half — Binance, then Claude, and from Phase 4 Telegram —
+    several seconds end to end. It runs *after* the response has been sent,
+    which is the entire reason invariant 1 holds. The background task
+    ignores the return value; tests and Phase 4's delivery use it.
+
+    In order:
+
+    1. `get_market_context(payload.symbol, alert_id)`.
+    2. None means Binance could not supply the numbers. Return None without
+       calling Claude (invariant 4): a brief with nothing to report would
+       have to be padded, and the model is not allowed to invent data.
+    3. `generate_brief(payload, context, alert_id)` and return what it does.
+       Its failures are its own to log; there is nothing to add here.
+
+    Around all of it, the last-resort net. Both functions promise never to
+    raise for an upstream failure, so anything that escapes them is a bug in
+    our code — `compute_context` dividing by zero, say. After the 202 was
+    sent, an exception here reaches nobody but stderr, and the alert is
+    dropped. So catch `Exception`, log stage "pipeline", outcome "degraded",
+    reason "internal_error" with `exc_info=True` so the traceback is in the
+    line, and return None. `asyncio.CancelledError` is not an `Exception`
+    and must pass through: it is how the server stops this task at shutdown,
+    and swallowing it would keep the process alive with zombie tasks.
+
+    This is the one broad `except` the manual allows (CLAUDE.md section 6).
+    Nothing else in `app/` may copy it.
     """
-    return None
+    started = time.perf_counter()
+
+    try:
+        context = await get_market_context(payload.symbol, alert_id)
+
+        if context is None:
+            return None
+
+        return await generate_brief(payload, context, alert_id)
+    except Exception:
+        log_event(
+            logger,
+            alert_id=alert_id,
+            stage="pipeline",
+            outcome="degraded",
+            latency_ms=(time.perf_counter() - started) * 1000,
+            reason="internal_error",
+            exc_info=True,
+        )
+
+        return None
 
 
 @router.post("/webhook", status_code=202)

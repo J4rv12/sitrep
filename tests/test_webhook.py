@@ -21,16 +21,19 @@ separates cleanly from the task:
 
 import asyncio
 import json
+import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.dedupe import DedupeCache, compute_alert_id
+from app.enrich import compute_context
 from app.main import app
 from app.routes import webhook
-from app.schemas import AlertPayload
+from app.schemas import AlertPayload, MarketContext, SignalBrief
 from conftest import FakeClock
 
 TOKEN = "test-webhook-token"
@@ -66,6 +69,30 @@ def fresh_cache(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     clock = FakeClock()
     monkeypatch.setattr(webhook, "_dedupe", DedupeCache(ttl_seconds=300, clock=clock))
     return clock
+
+
+@pytest.fixture(autouse=True)
+def offline_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test off the network.
+
+    `TestClient` runs background tasks before `post()` returns, so once
+    `process_alert` does real work, every accepted alert in this file would
+    call Binance and then Anthropic. Enrichment is replaced with "no
+    context", which ends the pipeline before Claude; `generate_brief` is
+    replaced with a failure, so a test that reaches it by accident says so.
+
+    `raising=False` because the names exist in `webhook` only once
+    `process_alert` is implemented; until then the patches are harmless.
+    """
+
+    async def no_context(symbol: str, alert_id: str) -> None:
+        return None
+
+    async def must_not_be_called(*args: object, **kwargs: object) -> None:
+        pytest.fail("generate_brief was called; this test is not offline")
+
+    monkeypatch.setattr(webhook, "get_market_context", no_context, raising=False)
+    monkeypatch.setattr(webhook, "generate_brief", must_not_be_called, raising=False)
 
 
 async def send_webhook_measuring_send(payload: bytes) -> tuple[int, float, float]:
@@ -289,3 +316,125 @@ def test_handler_returns_before_the_pipeline_runs() -> None:
     assert status == 202
     assert sent_ms < 500, f"response took {sent_ms:.1f} ms to send"
     assert finished_ms > 4900, "the background task did not actually run"
+
+
+# --- process_alert: yours ---------------------------------------------------
+
+# The context the recorded BTCUSDT klines produce, as in tests/test_llm.py.
+_KLINES = json.loads(
+    (Path(__file__).parent / "fixtures" / "binance_klines_btcusdt_1d.json").read_bytes()
+)
+CONTEXT = compute_context([float(r[4]) for r in _KLINES], [float(r[5]) for r in _KLINES])
+PAYLOAD = AlertPayload(**ALERT)
+BRIEF = SignalBrief(
+    severity="low",
+    headline="BTCUSDT close above 20MA on below-average volume",
+    observations=["Volume is 0.8x its 20-day average.", "Price is 0.9% below its 20-day average."],
+)
+
+
+@pytest.fixture(autouse=True)
+def capture_pipeline_logs(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="app.routes.webhook")
+
+
+def pipeline_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [record for record in caplog.records if record.name == "app.routes.webhook"]
+
+
+def enrichment_returning(context: MarketContext | None, seen: list[tuple[str, str]]) -> Any:
+    async def fake(symbol: str, alert_id: str) -> MarketContext | None:
+        seen.append((symbol, alert_id))
+        return context
+
+    return fake
+
+
+def brief_returning(brief: SignalBrief | None, seen: list[tuple[Any, ...]]) -> Any:
+    async def fake(
+        payload: AlertPayload, context: MarketContext, alert_id: str
+    ) -> SignalBrief | None:
+        seen.append((payload, context, alert_id))
+        return brief
+
+    return fake
+
+
+def raising(error: BaseException) -> Any:
+    async def fake(*args: object, **kwargs: object) -> None:
+        raise error
+
+    return fake
+
+
+async def test_context_and_brief_flow_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    enrich_calls: list[tuple[str, str]] = []
+    brief_calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(webhook, "get_market_context", enrichment_returning(CONTEXT, enrich_calls))
+    monkeypatch.setattr(webhook, "generate_brief", brief_returning(BRIEF, brief_calls))
+
+    result = await webhook.process_alert(PAYLOAD, "alert-1")
+
+    assert result == BRIEF
+    assert enrich_calls == [("BTCUSDT", "alert-1")]
+    assert brief_calls == [(PAYLOAD, CONTEXT, "alert-1")]
+
+
+async def test_no_context_means_claude_is_not_called(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invariant 4: nothing to report, so nothing to pay for."""
+    enrich_calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(webhook, "get_market_context", enrichment_returning(None, enrich_calls))
+    # generate_brief stays as offline_pipeline left it: calling it fails the test.
+
+    result = await webhook.process_alert(PAYLOAD, "alert-1")
+
+    assert result is None
+    assert enrich_calls == [("BTCUSDT", "alert-1")]
+
+
+async def test_a_brief_that_degraded_to_none_is_passed_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(webhook, "get_market_context", enrichment_returning(CONTEXT, []))
+    monkeypatch.setattr(webhook, "generate_brief", brief_returning(None, []))
+
+    assert await webhook.process_alert(PAYLOAD, "alert-1") is None
+
+
+@pytest.mark.parametrize("stage", ["get_market_context", "generate_brief"])
+async def test_a_bug_in_the_pipeline_is_logged_not_raised(
+    stage: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The last-resort net. Without it the alert is dropped and nothing says so."""
+    monkeypatch.setattr(webhook, "get_market_context", enrichment_returning(CONTEXT, []))
+    monkeypatch.setattr(webhook, stage, raising(ZeroDivisionError("simulated")))
+
+    result = await webhook.process_alert(PAYLOAD, "alert-1")
+
+    assert result is None
+    (record,) = pipeline_records(caplog)
+    assert (record.levelname, record.alert_id, record.stage, record.outcome, record.reason) == (
+        "ERROR",
+        "alert-1",
+        "pipeline",
+        "degraded",
+        "internal_error",
+    )
+    assert record.exc_info is not None and record.exc_info[0] is ZeroDivisionError
+
+
+async def test_cancellation_passes_through_the_net(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shutdown cancels running tasks. A net that swallows it leaves zombies."""
+    monkeypatch.setattr(webhook, "get_market_context", raising(asyncio.CancelledError()))
+
+    with pytest.raises(asyncio.CancelledError):
+        await webhook.process_alert(PAYLOAD, "alert-1")
+
+
+async def test_expected_degradation_leaves_no_pipeline_line(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Enrichment and the LLM log their own outcomes; a second line would double-count."""
+    monkeypatch.setattr(webhook, "get_market_context", enrichment_returning(None, []))
+
+    await webhook.process_alert(PAYLOAD, "alert-1")
+
+    assert pipeline_records(caplog) == []
