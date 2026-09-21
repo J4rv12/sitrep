@@ -15,6 +15,8 @@ import os
 
 os.environ["WEBHOOK_TOKEN"] = "test-webhook-token"
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-not-a-real-key"
+os.environ["TELEGRAM_BOT_TOKEN"] = "123456789:test-telegram-token"
+os.environ["TELEGRAM_CHAT_ID"] = "-1000000000001"
 
 
 class FakeClock:

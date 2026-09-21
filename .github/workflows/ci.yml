@@ -31,6 +31,8 @@ jobs:
           # conftest.py does not apply to a bare python -c.
           WEBHOOK_TOKEN: ci-smoke-token
           ANTHROPIC_API_KEY: sk-ant-ci-smoke
+          TELEGRAM_BOT_TOKEN: "123456789:ci-smoke"
+          TELEGRAM_CHAT_ID: "-1000000000001"
         run: python -c "import app.main"
 
       - run: pip install -r requirements-dev.txt

@@ -6,6 +6,7 @@ one file tells you everything the service needs to boot.
 
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,10 +27,11 @@ class Settings(BaseSettings):
     webhook_token: str
     anthropic_api_key: str
 
-    # Required from Phase 4, when Telegram delivery lands. Optional until then
-    # so Phase 0 can deploy before you have a bot token from @BotFather.
-    telegram_bot_token: str | None = None
-    telegram_chat_id: str | None = None
+    # An empty line in .env (`TELEGRAM_BOT_TOKEN=`) reads as "", which is a
+    # valid str. Without min_length the service would boot and then fail
+    # every delivery; with it, the deploy fails instead.
+    telegram_bot_token: str = Field(min_length=1)
+    telegram_chat_id: str = Field(min_length=1)
 
     # --- Operational settings. Not secret, so defaults are safe here. ---
     anthropic_model: str = "claude-haiku-4-5-20251001"
@@ -58,7 +60,8 @@ class Settings(BaseSettings):
     # Binance's market-data-only host: public endpoints, no auth, which is all
     # we call. Also reachable where api.binance.com is blocked at the ISP.
     binance_base_url: str = "https://data-api.binance.vision"
-    http_timeout_seconds: float = 5.0
+    telegram_base_url: str = "https://api.telegram.org"
+    http_timeout_seconds: float = 5.0  # Binance and Telegram both.
     demo_rate_limit_per_hour: int = 20
     log_level: str = "INFO"
 
