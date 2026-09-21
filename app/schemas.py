@@ -1,11 +1,11 @@
-"""The three data shapes that cross module boundaries.
+"""The four data shapes that cross module boundaries.
 
 `AlertPayload` is what TradingView sends us. `MarketContext` is what Binance
-gives us. `SignalBrief` is what Claude must produce. Nothing else travels
-between modules as a raw dict.
+gives us. `SignalBrief` is what Claude must produce. `FeedEntry` is what became
+of one alert. Nothing else travels between modules as a raw dict.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -57,3 +57,20 @@ class SignalBrief(BaseModel):
     severity: Literal["low", "medium", "high"]
     headline: Annotated[str, StringConstraints(strip_whitespace=True, max_length=120)]
     observations: list[ShortText] = Field(min_length=2, max_length=4)
+
+
+class FeedEntry(BaseModel):
+    """One processed alert, as `GET /alerts` shows it.
+
+    Built by the pipeline after delivery, so it records the outcome, not just
+    the input. `brief` is None when the alert shipped `[unenriched]`, and
+    `delivered` is False when Telegram refused it; each has a log line with
+    the reason code. The webhook token is not here: `AlertPayload` has no
+    field for it.
+    """
+
+    alert_id: str
+    alert: AlertPayload
+    brief: SignalBrief | None
+    delivered: bool
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

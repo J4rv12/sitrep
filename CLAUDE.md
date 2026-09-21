@@ -137,7 +137,7 @@ sitrep/
 ├── app/
 │   ├── main.py          # FastAPI app, router wiring
 │   ├── config.py        # pydantic-settings; ALL env vars, typed
-│   ├── schemas.py       # AlertPayload, MarketContext, SignalBrief
+│   ├── schemas.py       # AlertPayload, MarketContext, SignalBrief, FeedEntry
 │   ├── security.py      # token check (constant-time), demo IP rate limit
 │   ├── dedupe.py        # TTL cache keyed on alert_id
 │   ├── enrich.py        # Binance klines → two numbers
@@ -145,7 +145,7 @@ sitrep/
 │   ├── guards.py        # advice detector
 │   ├── telegram.py      # formatter + send
 │   ├── prompts/         # versioned .md prompt files
-│   └── routes/          # webhook.py, demo.py, health.py
+│   └── routes/          # webhook.py, alerts.py (feed), demo.py, health.py
 ├── eval/                # dataset.jsonl, run_eval.py, results.md
 ├── demo/                # static page for GitHub Pages
 ├── tests/
