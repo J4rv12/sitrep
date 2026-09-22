@@ -32,8 +32,9 @@ from fastapi.testclient import TestClient
 from app.dedupe import DedupeCache, compute_alert_id
 from app.enrich import compute_context
 from app.main import app
-from app.routes import webhook
+from app.routes import alerts, webhook
 from app.schemas import AlertPayload, MarketContext, SignalBrief
+from app.telegram import format_message
 from conftest import FakeClock
 
 TOKEN = "test-webhook-token"
@@ -75,14 +76,14 @@ def fresh_cache(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
 def offline_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep every test off the network.
 
-    `TestClient` runs background tasks before `post()` returns, so once
-    `process_alert` does real work, every accepted alert in this file would
-    call Binance and then Anthropic. Enrichment is replaced with "no
-    context", which ends the pipeline before Claude; `generate_brief` is
-    replaced with a failure, so a test that reaches it by accident says so.
+    `TestClient` runs background tasks before `post()` returns, so every
+    accepted alert in this file runs the whole pipeline. Enrichment is
+    replaced with "no context", which ends `process_alert` before Claude;
+    `generate_brief` is replaced with a failure, so a test that reaches it by
+    accident says so; `send_message` reports success without sending.
 
-    `raising=False` because the names exist in `webhook` only once
-    `process_alert` is implemented; until then the patches are harmless.
+    `raising=False` because `send_message` exists in `webhook` only once
+    `deliver_alert` imports it; until then that patch is harmless.
     """
 
     async def no_context(symbol: str, alert_id: str) -> None:
@@ -91,8 +92,18 @@ def offline_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     async def must_not_be_called(*args: object, **kwargs: object) -> None:
         pytest.fail("generate_brief was called; this test is not offline")
 
-    monkeypatch.setattr(webhook, "get_market_context", no_context, raising=False)
-    monkeypatch.setattr(webhook, "generate_brief", must_not_be_called, raising=False)
+    async def delivered(text: str, alert_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(webhook, "get_market_context", no_context)
+    monkeypatch.setattr(webhook, "generate_brief", must_not_be_called)
+    monkeypatch.setattr(webhook, "send_message", delivered, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def empty_feed() -> None:
+    """Accepted alerts land in the feed, so start every test with it empty."""
+    alerts._feed.clear()
 
 
 async def send_webhook_measuring_send(payload: bytes) -> tuple[int, float, float]:
@@ -159,7 +170,7 @@ def test_accepted_alert_is_enqueued() -> None:
         calls.append((payload, alert_id))
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(webhook, "process_alert", spy)
+        patch.setattr(webhook, "deliver_alert", spy)
         response = client.post("/webhook", json=body())
 
     assert len(calls) == 1
@@ -199,7 +210,7 @@ def test_rejected_alert_is_not_enqueued() -> None:
         calls.append(alert_id)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(webhook, "process_alert", spy)
+        patch.setattr(webhook, "deliver_alert", spy)
         client.post("/webhook", json=body(token="not-the-token"))
 
     assert calls == []
@@ -262,7 +273,7 @@ def test_duplicate_within_ttl_is_reported_not_reprocessed() -> None:
         calls.append(alert_id)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(webhook, "process_alert", spy)
+        patch.setattr(webhook, "deliver_alert", spy)
         first = client.post("/webhook", json=body())
         second = client.post("/webhook", json=body())
 
@@ -295,7 +306,7 @@ def test_price_change_does_not_defeat_dedupe() -> None:
 def test_handler_returns_before_the_pipeline_runs() -> None:
     """The phase, in one assertion.
 
-    `process_alert` is replaced with a five-second sleep — a stand-in for
+    `deliver_alert` is replaced with a five-second sleep — a stand-in for
     Binance plus Claude plus Telegram, which really do take seconds. The
     response must still be on the wire in well under 500 ms.
 
@@ -308,7 +319,7 @@ def test_handler_returns_before_the_pipeline_runs() -> None:
         await asyncio.sleep(5)
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(webhook, "process_alert", slow_pipeline)
+        patch.setattr(webhook, "deliver_alert", slow_pipeline)
         status, sent_ms, finished_ms = asyncio.run(
             send_webhook_measuring_send(json.dumps(body()).encode())
         )
@@ -438,3 +449,95 @@ async def test_expected_degradation_leaves_no_pipeline_line(
     await webhook.process_alert(PAYLOAD, "alert-1")
 
     assert pipeline_records(caplog) == []
+
+
+# --- deliver_alert: yours ---------------------------------------------------
+
+
+def pipeline_returning(brief: SignalBrief | None, seen: list[tuple[Any, ...]]) -> Any:
+    async def fake(payload: AlertPayload, alert_id: str) -> SignalBrief | None:
+        seen.append((payload, alert_id))
+        return brief
+
+    return fake
+
+
+def telegram_answering(delivered: bool, sent: list[tuple[str, str]]) -> Any:
+    async def fake(text: str, alert_id: str) -> bool:
+        sent.append((text, alert_id))
+        return delivered
+
+    return fake
+
+
+async def test_a_brief_is_sent_and_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline_calls: list[tuple[Any, ...]] = []
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(webhook, "process_alert", pipeline_returning(BRIEF, pipeline_calls))
+    monkeypatch.setattr(webhook, "send_message", telegram_answering(True, sent), raising=False)
+
+    await webhook.deliver_alert(PAYLOAD, "alert-1")
+
+    assert pipeline_calls == [(PAYLOAD, "alert-1")]
+    assert sent == [(format_message(PAYLOAD, BRIEF), "alert-1")]
+    (entry,) = alerts._feed
+    assert (entry.alert_id, entry.alert, entry.brief, entry.delivered) == (
+        "alert-1",
+        PAYLOAD,
+        BRIEF,
+        True,
+    )
+
+
+async def test_no_brief_still_ships_tagged_unenriched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invariant 4: degrade, never drop."""
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(webhook, "process_alert", pipeline_returning(None, []))
+    monkeypatch.setattr(webhook, "send_message", telegram_answering(True, sent), raising=False)
+
+    await webhook.deliver_alert(PAYLOAD, "alert-1")
+
+    assert sent == [(format_message(PAYLOAD, None), "alert-1")]
+    (entry,) = alerts._feed
+    assert (entry.brief, entry.delivered) == (None, True)
+
+
+async def test_a_bug_caught_by_the_net_still_ships(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Why delivery sits after the net, not inside it.
+
+    The real `process_alert` runs here. Enrichment raises, the net turns it
+    into None, and the alert must still reach the chat, unenriched.
+    """
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(webhook, "get_market_context", raising(ZeroDivisionError("simulated")))
+    monkeypatch.setattr(webhook, "send_message", telegram_answering(True, sent), raising=False)
+
+    await webhook.deliver_alert(PAYLOAD, "alert-1")
+
+    assert sent == [(format_message(PAYLOAD, None), "alert-1")]
+
+
+async def test_a_refused_send_is_recorded_as_undelivered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The feed says what happened; Telegram's reason code is in its own log line."""
+    monkeypatch.setattr(webhook, "process_alert", pipeline_returning(BRIEF, []))
+    monkeypatch.setattr(webhook, "send_message", telegram_answering(False, []), raising=False)
+
+    await webhook.deliver_alert(PAYLOAD, "alert-1")
+
+    (entry,) = alerts._feed
+    assert (entry.brief, entry.delivered) == (BRIEF, False)
+
+
+def test_accepted_alert_reaches_the_feed_without_its_token() -> None:
+    """The whole path through the app: webhook in, feed out.
+
+    The token arrives in the body, and nothing downstream may keep it.
+    """
+    accepted = client.post("/webhook", json=body())
+
+    listed = client.get("/alerts", headers={"X-SitRep-Token": TOKEN})
+
+    (item,) = listed.json()
+    assert item["alert_id"] == accepted.json()["alert_id"]
+    assert item["brief"] is None, "offline_pipeline supplies no context"
+    assert TOKEN not in listed.text

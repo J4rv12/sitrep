@@ -28,10 +28,11 @@ interrupted between the dedupe check and the dedupe write. A plain `def`
 would be handed to a threadpool, where two simultaneous retries of the same
 alert can both pass the check and both deliver.
 
-`get_market_context` and `generate_brief` are imported by name on purpose.
-tests/test_webhook.py replaces `webhook.get_market_context` and
-`webhook.generate_brief`, which is what keeps the suite away from Binance and
-Anthropic. Reached through their modules instead, they would escape the patch.
+`get_market_context`, `generate_brief` and `send_message` are imported by name
+on purpose. tests/test_webhook.py replaces `webhook.get_market_context`,
+`webhook.generate_brief` and `webhook.send_message`, which is what keeps the
+suite away from Binance, Anthropic and Telegram. Reached through their modules
+instead, they would escape the patch.
 """
 
 import logging
@@ -47,8 +48,10 @@ from app.dedupe import DedupeCache, compute_alert_id
 from app.enrich import get_market_context
 from app.llm import generate_brief
 from app.logs import log_event
-from app.schemas import AlertPayload, SignalBrief
+from app.routes.alerts import record_alert
+from app.schemas import AlertPayload, FeedEntry, SignalBrief
 from app.security import token_is_valid
+from app.telegram import format_message, send_message
 
 router = APIRouter(tags=["webhook"])
 
@@ -62,10 +65,9 @@ logger = logging.getLogger(__name__)
 async def process_alert(payload: AlertPayload, alert_id: str) -> SignalBrief | None:
     """Run the pipeline for one accepted alert; return its brief, or None.
 
-    This is the slow half — Binance, then Claude, and from Phase 4 Telegram —
-    several seconds end to end. It runs *after* the response has been sent,
-    which is the entire reason invariant 1 holds. The background task
-    ignores the return value; tests and Phase 4's delivery use it.
+    Binance, then Claude: several seconds end to end. It runs *after* the
+    response has been sent, which is the entire reason invariant 1 holds.
+    `deliver_alert` calls it and ships whatever it returns.
 
     In order:
 
@@ -114,6 +116,43 @@ async def process_alert(payload: AlertPayload, alert_id: str) -> SignalBrief | N
         return None
 
 
+async def deliver_alert(payload: AlertPayload, alert_id: str) -> None:
+    """Get a brief if there is one, deliver the alert either way, record the outcome.
+
+    This is what the route enqueues. `process_alert` answers one question —
+    is there a brief? — and this function ships the answer, whatever it was.
+    The split is invariant 4 at the last stage. When the net in
+    `process_alert` turns a bug into None, the alert still goes out, tagged
+    `[unenriched]`. Put delivery inside that `try` and a bug in enrichment
+    would jump past the send: the alert would be lost, with only a log line.
+
+    In order:
+
+    1. `process_alert(payload, alert_id)`.
+    2. `format_message(payload, brief)`. It handles a brief and None alike.
+    3. `send_message(text, alert_id)`, which returns whether Telegram took it.
+    4. `record_alert` with a `FeedEntry` holding the alert, the brief, and
+       that answer. After the send, so the feed can say whether it was
+       delivered. The entry stamps its own time.
+
+    No `try` here. This runs after the net, so everything in it must be
+    unable to raise: `format_message` is pure and handles every valid brief,
+    `send_message` turns every failure into False, and `record_alert`
+    appends to a deque. A second broad `except` would break the one-net rule
+    in CLAUDE.md section 6.
+
+    Names you will need that are not imported yet: `format_message` and
+    `send_message` from app.telegram, `record_alert` from app.routes.alerts,
+    and `FeedEntry` from app.schemas. Import `send_message` by name, as the
+    module docstring says, or the tests cannot keep it off the network.
+    """
+    brief = await process_alert(payload, alert_id)
+    text = format_message(payload, brief)
+    delivered = await send_message(text, alert_id)
+
+    record_alert(FeedEntry(alert_id=alert_id, alert=payload, brief=brief, delivered=delivered))
+
+
 @router.post("/webhook", status_code=202)
 async def receive_alert(request: Request, background_tasks: BackgroundTasks) -> JSONResponse:
     """Accept a TradingView alert, enqueue it, and return immediately.
@@ -130,13 +169,13 @@ async def receive_alert(request: Request, background_tasks: BackgroundTasks) -> 
        special handling — it is simply not part of the model.
     4. `compute_alert_id`, then `_dedupe.seen_before`. True means this is a
        retry: return 200 with "duplicate" and enqueue nothing.
-    5. `background_tasks.add_task(process_alert, payload, alert_id)`, then
+    5. `background_tasks.add_task(deliver_alert, payload, alert_id)`, then
        return 202 with "accepted".
 
     **Nothing in this function may open a socket, and nothing may `await`
     anything slow.** The only `await` here is `request.json()`, which reads a
     buffer that has already arrived. Every network call belongs in
-    `process_alert`.
+    `deliver_alert` and what it calls.
 
     Returns a `JSONResponse` in both success cases because they carry
     different status codes. A returned Response object overrides the
@@ -168,5 +207,5 @@ async def receive_alert(request: Request, background_tasks: BackgroundTasks) -> 
     if _dedupe.seen_before(alert_id):
         return JSONResponse(content={"status": "duplicate", "alert_id": alert_id}, status_code=200)
 
-    background_tasks.add_task(process_alert, payload, alert_id)
+    background_tasks.add_task(deliver_alert, payload, alert_id)
     return JSONResponse(content={"status": "accepted", "alert_id": alert_id}, status_code=202)
