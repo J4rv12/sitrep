@@ -37,7 +37,7 @@ from app.schemas import AlertPayload, MarketContext, SignalBrief
 from app.telegram import format_message
 from conftest import FakeClock
 
-TOKEN = "test-webhook-token"
+TOKEN = "test-webhook-token-at-least-32-chars"
 
 ALERT = {
     "symbol": "BTCUSDT",

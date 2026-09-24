@@ -16,7 +16,7 @@ from app.main import app
 from app.routes import alerts
 from app.schemas import AlertPayload, FeedEntry, SignalBrief
 
-TOKEN = "test-webhook-token"
+TOKEN = "test-webhook-token-at-least-32-chars"
 HEADERS = {"X-SitRep-Token": TOKEN}
 
 RECORDED = json.loads(

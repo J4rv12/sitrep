@@ -13,7 +13,7 @@ real `.env` can never leak into a test run.
 
 import os
 
-os.environ["WEBHOOK_TOKEN"] = "test-webhook-token"
+os.environ["WEBHOOK_TOKEN"] = "test-webhook-token-at-least-32-chars"
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-not-a-real-key"
 os.environ["TELEGRAM_BOT_TOKEN"] = "123456789:test-telegram-token"
 os.environ["TELEGRAM_CHAT_ID"] = "-1000000000001"

@@ -21,11 +21,21 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",  # Render injects PORT and friends; not our business.
+        # A rejected value is otherwise quoted in the error, and the error goes
+        # to Render's deploy log. A real token one character too short would
+        # be published there in full.
+        hide_input_in_errors=True,
     )
 
     # --- Secrets. No defaults, ever. ---
-    webhook_token: str
-    anthropic_api_key: str
+    # 32 rejects `replace-me`, the placeholder anyone can read in the public
+    # .env.example, and any token short enough to guess. The generator
+    # .env.example suggests produces 43. With no minimum, an empty value
+    # boots, and then a request carrying `"token": ""` authenticates.
+    webhook_token: str = Field(min_length=32)
+    # Anthropic checks the key on the first call. This only stops an empty
+    # line from booting a service whose every brief then fails with a 401.
+    anthropic_api_key: str = Field(min_length=1)
 
     # An empty line in .env (`TELEGRAM_BOT_TOKEN=`) reads as "", which is a
     # valid str. Without min_length the service would boot and then fail
