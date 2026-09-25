@@ -248,8 +248,29 @@ class SpendLedger:
 
         return False
 
+    def can_spend(self, amount_usd: float) -> bool:
+        """Return True if `try_spend(amount_usd)` would succeed now. Charges nothing.
+
+        For a caller that must know before asking for a brief whether the cap
+        will refuse it: `generate_brief` returns None for a spent cap and for
+        a failed call alike. True is a forecast, not a reservation. Another
+        alert can spend the room before the caller's own attempt does.
+        """
+        date_string = str(self._clock().astimezone(UTC).date())
+        return self._cap_usd >= (amount_usd + self._ledger.get(date_string, 0.0))
+
 
 _ledger = SpendLedger(get_settings().daily_spend_cap_usd)
+
+
+def daily_cap_allows_a_brief() -> bool:
+    """Return True if today's cap has room for one attempt at the worst-case cost.
+
+    The demo asks this before it asks for a brief, so that a spent cap can be
+    told apart from a failed call and said plainly (invariant 6). Reads the
+    production ledger and charges nothing.
+    """
+    return _ledger.can_spend(worst_case_cost_usd())
 
 
 async def generate_brief(

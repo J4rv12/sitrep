@@ -1,0 +1,86 @@
+{
+  "recorded_at": "2026-09-24T14:45:59Z",
+  "source": "app.enrich.compute_context over live GET https://data-api.binance.vision/api/v3/klines?symbol=<pair>&interval=1d&limit=22, one request per pair",
+  "contexts": {
+    "BTCUSDT": {
+      "volume_vs_20d_avg": 1.4165971259082994,
+      "pct_from_20ma": 5.744418116006554
+    },
+    "ETHUSDT": {
+      "volume_vs_20d_avg": 1.0331543800844127,
+      "pct_from_20ma": 5.106868317541253
+    },
+    "SOLUSDT": {
+      "volume_vs_20d_avg": 1.4550461389161835,
+      "pct_from_20ma": 9.016590300113487
+    },
+    "BNBUSDT": {
+      "volume_vs_20d_avg": 1.2324456738717824,
+      "pct_from_20ma": 4.4429899061287355
+    },
+    "XRPUSDT": {
+      "volume_vs_20d_avg": 1.8972480618170597,
+      "pct_from_20ma": 7.943763862336111
+    },
+    "DOGEUSDT": {
+      "volume_vs_20d_avg": 1.9992726951082656,
+      "pct_from_20ma": 8.596667746721447
+    },
+    "ADAUSDT": {
+      "volume_vs_20d_avg": 1.371444378238579,
+      "pct_from_20ma": 12.994092557534845
+    },
+    "AVAXUSDT": {
+      "volume_vs_20d_avg": 1.375708168497412,
+      "pct_from_20ma": 20.63521653520373
+    },
+    "LINKUSDT": {
+      "volume_vs_20d_avg": 1.5950736437578845,
+      "pct_from_20ma": 4.676847841853329
+    },
+    "DOTUSDT": {
+      "volume_vs_20d_avg": 1.1428137847322128,
+      "pct_from_20ma": 7.795512375665063
+    },
+    "LTCUSDT": {
+      "volume_vs_20d_avg": 2.0354218208882253,
+      "pct_from_20ma": 28.93977737271487
+    },
+    "TRXUSDT": {
+      "volume_vs_20d_avg": 1.334852819687511,
+      "pct_from_20ma": 0.5037002023663606
+    },
+    "TONUSDT": {
+      "volume_vs_20d_avg": 0.6253676230724288,
+      "pct_from_20ma": -2.379499694935932
+    },
+    "BCHUSDT": {
+      "volume_vs_20d_avg": 4.541874026561644,
+      "pct_from_20ma": 32.928277930322686
+    },
+    "NEARUSDT": {
+      "volume_vs_20d_avg": 2.9933887938364583,
+      "pct_from_20ma": 51.81734680488125
+    },
+    "UNIUSDT": {
+      "volume_vs_20d_avg": 1.7554993496618678,
+      "pct_from_20ma": 22.953170542997604
+    },
+    "SUIUSDT": {
+      "volume_vs_20d_avg": 1.2304374692753273,
+      "pct_from_20ma": 22.9644034318492
+    },
+    "ARBUSDT": {
+      "volume_vs_20d_avg": 0.9532569648077951,
+      "pct_from_20ma": 22.4512628310911
+    },
+    "ATOMUSDT": {
+      "volume_vs_20d_avg": 1.1226617769550218,
+      "pct_from_20ma": 5.447528573549057
+    },
+    "XLMUSDT": {
+      "volume_vs_20d_avg": 1.6147052816139984,
+      "pct_from_20ma": 9.65234744249554
+    }
+  }
+}

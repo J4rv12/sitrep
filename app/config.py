@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     binance_base_url: str = "https://data-api.binance.vision"
     telegram_base_url: str = "https://api.telegram.org"
     http_timeout_seconds: float = 5.0  # Binance and Telegram both.
+    # Off unless a deployment opts in. `POST /demo/...` needs no token and
+    # spends Claude credit, so a second, private deployment of this repo must
+    # not serve it just by existing.
+    demo_enabled: bool = False
     demo_rate_limit_per_hour: int = 20
     log_level: str = "INFO"
 

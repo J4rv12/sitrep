@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from app.config import get_settings
 from app.logs import configure_logging
-from app.routes import alerts, health, webhook
+from app.routes import alerts, demo, health, webhook
 
 # Eager, at import time, on purpose. Uvicorn imports this module to find
 # `app`; if a required setting is missing this raises here, the process exits
@@ -17,3 +17,4 @@ app = FastAPI(title="SitRep", version="0.1.0")
 app.include_router(health.router)
 app.include_router(webhook.router)
 app.include_router(alerts.router)
+app.include_router(demo.router)

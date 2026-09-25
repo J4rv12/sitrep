@@ -35,7 +35,11 @@ _VOLUME = 5
 
 
 class EnrichmentFailed(Exception):
-    """An upstream failure carrying its reason code. Never escapes this module."""
+    """An upstream failure carrying its reason code.
+
+    Raised by `fetch_klines` and caught by its two callers: `get_market_context`
+    here and the demo's watchlist scan. It never reaches the pipeline.
+    """
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)

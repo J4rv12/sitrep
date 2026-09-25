@@ -42,6 +42,12 @@ def test_empty_anthropic_key_fails_at_boot(monkeypatch: pytest.MonkeyPatch) -> N
         build(monkeypatch, ANTHROPIC_API_KEY="")
 
 
+def test_demo_is_off_unless_a_deployment_opts_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DEMO_ENABLED", raising=False)
+
+    assert build(monkeypatch).demo_enabled is False
+
+
 def test_rejected_secret_is_not_quoted_in_the_error(monkeypatch: pytest.MonkeyPatch) -> None:
     # A real-looking token, one character short. The error is printed to
     # Render's deploy log, so the token must not appear in it.

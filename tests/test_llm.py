@@ -336,6 +336,39 @@ def test_day_is_the_utc_day_whatever_the_clocks_timezone() -> None:
     assert ledger.try_spend(0.25) is False, "the day turned over on local time, not UTC"
 
 
+# --- can_spend: the demo's question before it asks for a brief --------------
+
+
+def test_can_spend_forecasts_try_spend_and_charges_nothing() -> None:
+    ledger = llm.SpendLedger(cap_usd=1.0, clock=WallClock(NOON))
+    assert ledger.try_spend(0.75) is True
+
+    assert ledger.can_spend(0.25) is True, "a total exactly at the cap is within it"
+    assert ledger.can_spend(0.5) is False
+    assert ledger.try_spend(0.25) is True, "the forecasts must not have charged anything"
+    assert ledger.can_spend(0.25) is False
+
+
+def test_can_spend_on_a_day_with_no_charges_yet() -> None:
+    clock = WallClock(datetime(2026, 9, 15, 23, 59, tzinfo=UTC))
+    ledger = llm.SpendLedger(cap_usd=1.0, clock=clock)
+    assert ledger.try_spend(1.0) is True
+
+    clock.now = datetime(2026, 9, 16, 0, 0, tzinfo=UTC)
+
+    assert ledger.can_spend(1.0) is True
+
+
+def test_daily_cap_allows_a_brief_reads_the_production_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(llm, "_ledger", llm.SpendLedger(cap_usd=llm.worst_case_cost_usd()))
+    assert llm.daily_cap_allows_a_brief() is True
+
+    monkeypatch.setattr(llm, "_ledger", llm.SpendLedger(cap_usd=0.0))
+    assert llm.daily_cap_allows_a_brief() is False
+
+
 # --- generate_brief: yours --------------------------------------------------
 
 UNUSABLE = recorded_with(severity="critical")
