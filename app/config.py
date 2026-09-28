@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     # bound spend, the daily cap does; it sets how many visitors it takes to
     # use that cap up. Lower hurts strangers who share one carrier IP.
     demo_rate_limit_per_hour: int = 10
+    # The web pages a browser lets read this service's responses: the demo on
+    # GitHub Pages. An origin is scheme and host, no path. Not access control:
+    # curl ignores CORS, and any page can still send the POST; it just cannot
+    # read the result. As an env var it is a JSON list, e.g. for a local copy
+    # of the page: DEMO_ALLOWED_ORIGINS='["http://localhost:8080"]'
+    demo_allowed_origins: list[str] = ["https://j4rv12.github.io"]
     log_level: str = "INFO"
 
 
