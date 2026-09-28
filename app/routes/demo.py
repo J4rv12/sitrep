@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 # Render and sets this header to the address it saw, overwriting any value
 # the client sent. The two alternatives are both wrong there:
 # - the socket address is Render's proxy, the same for every visitor, so one
-#   visitor's 20 clicks would lock out everyone;
+#   visitor's allowance would be everyone's;
 # - X-Forwarded-For starts with whatever the client wrote, and Render appends
 #   to it rather than replacing it, so a script rotating fake values would
 #   never be limited.
@@ -273,7 +273,7 @@ async def run_demo(scenario: str, request: Request) -> StreamingResponse:
 
     `async def`, and `allow` has no `await`, so two requests from one IP
     cannot both see the last free slot. As a plain `def` this would run on a
-    thread pool, and two threads could each read 19 before either wrote 20.
+    thread pool, and two threads could each read 9 before either wrote 10.
 
     A POST, never a GET. Chat apps fetch GET links by themselves to build a
     preview, and every preview would be a Claude call nobody made.

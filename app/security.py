@@ -52,10 +52,10 @@ class RateLimiter:
     Invariant 6's guard on the demo. The key is the client IP; which header
     that comes from is the route's decision, not this class's.
 
-    Rolling, not fixed. A fixed window resets at the top of the hour, so 20
-    requests at 10:59 and 20 more at 11:00 make 40 in two minutes. Here a
+    Rolling, not fixed. A fixed window resets at the top of the hour, so 10
+    requests at 10:59 and 10 more at 11:00 make 20 in two minutes. Here a
     request stops counting exactly `window_seconds` after it was recorded, so
-    the 21st waits until the first is an hour old.
+    the 11th waits until the first is an hour old.
 
     Same shape as `DedupeCache`, for the same reasons: one instance per
     process, built by the route from config; checking and recording in one

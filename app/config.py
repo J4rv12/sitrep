@@ -76,7 +76,10 @@ class Settings(BaseSettings):
     # spends Claude credit, so a second, private deployment of this repo must
     # not serve it just by existing.
     demo_enabled: bool = False
-    demo_rate_limit_per_hour: int = 20
+    # Per visitor IP. Enough to try each scenario three times. It does not
+    # bound spend, the daily cap does; it sets how many visitors it takes to
+    # use that cap up. Lower hurts strangers who share one carrier IP.
+    demo_rate_limit_per_hour: int = 10
     log_level: str = "INFO"
 
 
