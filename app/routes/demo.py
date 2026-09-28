@@ -26,7 +26,8 @@ alerts out of the feed's 50 entries.
 
 `scan_watchlist`, `get_market_context`, `generate_brief` and
 `daily_cap_allows_a_brief` are called by these names so tests/test_demo.py can
-replace them, as in routes/webhook.py.
+replace them, as in routes/webhook.py. `_limiter` is module state for the same
+reason `_dedupe` is, and the tests replace it the same way.
 """
 
 import asyncio
@@ -37,7 +38,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.config import get_settings
@@ -46,11 +47,27 @@ from app.enrich import EnrichmentFailed, compute_context, fetch_klines, get_mark
 from app.llm import daily_cap_allows_a_brief, generate_brief
 from app.logs import log_event
 from app.schemas import AlertPayload, MarketContext
+from app.security import RateLimiter
 from app.telegram import format_message
 
 router = APIRouter(tags=["demo"])
 
 logger = logging.getLogger(__name__)
+
+# Where the visitor's IP comes from on Render. Cloudflare sits in front of
+# Render and sets this header to the address it saw, overwriting any value
+# the client sent. The two alternatives are both wrong there:
+# - the socket address is Render's proxy, the same for every visitor, so one
+#   visitor's 20 clicks would lock out everyone;
+# - X-Forwarded-For starts with whatever the client wrote, and Render appends
+#   to it rather than replacing it, so a script rotating fake values would
+#   never be limited.
+CLIENT_IP_HEADER = "True-Client-IP"
+
+# Process-local, built once at import, like the webhook's dedupe cache. A
+# restart or a free-tier sleep empties it, which forgives at most one hour of
+# one visitor's clicks.
+_limiter = RateLimiter(limit=get_settings().demo_rate_limit_per_hour, window_seconds=3600)
 
 SCENARIOS = ("breakout", "weak", "malformed")
 
@@ -231,19 +248,41 @@ async def stream_scenario(scenario: str) -> AsyncIterator[str]:
     )
 
 
+def client_ip(request: Request) -> str:
+    """Return the visitor's IP: `CLIENT_IP_HEADER`, else the socket address.
+
+    The fallback is for local runs and tests, where there is no Cloudflare.
+    On Render it fails safe: if the header ever went missing, every visitor
+    would share the proxy's address and the limit would bind harder, never
+    looser.
+    """
+    header = request.headers.get(CLIENT_IP_HEADER)
+    if header:
+        return header
+    return request.client.host if request.client else "unknown"
+
+
 @router.post("/demo/{scenario}")
-async def run_demo(scenario: str) -> StreamingResponse:
-    """Stream one scenario; 404 when the demo is off or the scenario is unknown.
+async def run_demo(scenario: str, request: Request) -> StreamingResponse:
+    """Stream one scenario, or refuse: 404 when the demo is off or the
+    scenario unknown, 429 when this IP has used its hourly allowance.
 
     Every refusal is decided here, before the stream starts. Once the first
     event is sent the status is fixed at 200, so a later "no" could only
     arrive as a 200 followed by an error.
+
+    `async def`, and `allow` has no `await`, so two requests from one IP
+    cannot both see the last free slot. As a plain `def` this would run on a
+    thread pool, and two threads could each read 19 before either wrote 20.
 
     A POST, never a GET. Chat apps fetch GET links by themselves to build a
     preview, and every preview would be a Claude call nobody made.
     """
     if not get_settings().demo_enabled or scenario not in SCENARIOS:
         raise HTTPException(status_code=404, detail="Not Found")
+
+    if not _limiter.allow(client_ip(request)):
+        raise HTTPException(status_code=429, detail="Demo limit reached for this hour")
 
     return StreamingResponse(
         stream_scenario(scenario),

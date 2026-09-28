@@ -30,7 +30,9 @@ from app.config import get_settings
 from app.main import app
 from app.routes import alerts, demo
 from app.schemas import AlertPayload, MarketContext, SignalBrief
+from app.security import RateLimiter
 from app.telegram import format_message
+from conftest import FakeClock
 
 FIXTURES = Path(__file__).parent / "fixtures"
 RECORDED = json.loads((FIXTURES / "demo_watchlist_contexts.json").read_bytes())
@@ -40,8 +42,9 @@ INVALID_SYMBOL_BODY = (FIXTURES / "binance_error_invalid_symbol.json").read_byte
 _REPLY = json.loads((FIXTURES / "anthropic_brief_btcusdt_low_volume.json").read_bytes())
 BRIEF = SignalBrief.model_validate_json(_REPLY["content"][0]["text"])
 
-# The real scan, kept before the `offline` fixture replaces it in every test.
+# The real scan and limiter, kept before the fixtures replace them in every test.
 REAL_SCAN = demo.scan_watchlist
+PRODUCTION_LIMITER = demo._limiter
 
 client = TestClient(app)
 
@@ -72,6 +75,18 @@ def demo_on(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def empty_feed() -> None:
     alerts._feed.clear()
+
+
+@pytest.fixture(autouse=True)
+def fresh_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two requests per IP, on a clock nobody advances.
+
+    `_limiter` is module state, so without this every POST in this file
+    would draw on one shared allowance and a test's result would depend on
+    how many ran before it.
+    """
+    limiter = RateLimiter(limit=2, window_seconds=3600, clock=FakeClock())
+    monkeypatch.setattr(demo, "_limiter", limiter)
 
 
 @pytest.fixture(autouse=True)
@@ -122,6 +137,60 @@ def test_get_does_not_run_a_scenario(offline: dict[str, list[str]]) -> None:
     """A GET is what a chat app's link preview sends."""
     assert client.get("/demo/breakout").status_code == 405
     assert offline["scan"] == []
+
+
+# --- the rate limit: 429, per visitor, before the stream --------------------
+
+
+def post_from(ip: str | None = None, **headers: str) -> int:
+    if ip is not None:
+        headers["True-Client-IP"] = ip
+    return client.post("/demo/malformed", headers=headers).status_code
+
+
+def test_over_the_limit_is_429_and_runs_nothing(offline: dict[str, list[str]]) -> None:
+    assert [post_from("203.0.113.7") for _ in range(3)] == [200, 200, 429]
+    assert len(offline["enrich"]) == 2, "the refused request must not reach Binance"
+
+
+def test_each_visitor_has_their_own_allowance() -> None:
+    post_from("203.0.113.7")
+    post_from("203.0.113.7")
+
+    assert post_from("198.51.100.4") == 200
+
+
+def test_x_forwarded_for_cannot_buy_more_requests() -> None:
+    """The spoof a script would try: a new fake address every request. The
+    real client IP is unchanged, so the third is refused all the same."""
+    statuses = [post_from("203.0.113.7", **{"X-Forwarded-For": f"10.0.0.{n}"}) for n in range(3)]
+
+    assert statuses == [200, 200, 429]
+
+
+def test_without_the_header_the_socket_address_is_the_key() -> None:
+    """Local runs and tests have no Cloudflare. TestClient's socket address
+    is the same for every request, so the third is refused."""
+    assert [post_from() for _ in range(3)] == [200, 200, 429]
+
+
+def test_refusals_for_other_reasons_do_not_use_the_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client.post("/demo/moon", headers={"True-Client-IP": "203.0.113.7"})
+    monkeypatch.setattr(get_settings(), "demo_enabled", False)
+    post_from("203.0.113.7")
+    monkeypatch.setattr(get_settings(), "demo_enabled", True)
+
+    assert [post_from("203.0.113.7") for _ in range(2)] == [200, 200]
+
+
+def test_production_limiter_allows_the_configured_number_per_hour() -> None:
+    """The instance the route really uses, built at import from config. The
+    key is used by no other test, so nothing else draws on it."""
+    allowed = sum(PRODUCTION_LIMITER.allow("production-limiter-test") for _ in range(100))
+
+    assert allowed == get_settings().demo_rate_limit_per_hour
 
 
 # --- the stream -------------------------------------------------------------
