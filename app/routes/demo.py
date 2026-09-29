@@ -94,26 +94,29 @@ MALFORMED_SYMBOL = "BINANCE:BTCUSDT"
 
 async def scan_watchlist(
     transport: httpx.AsyncBaseTransport | None = None,
+    now: datetime | None = None,
 ) -> tuple[dict[str, MarketContext], str | None]:
     """Fetch every watchlist pair at once; return their contexts and the first failure.
 
-    Pairs Binance cannot supply are left out of the dict. The second value is
-    the reason code of the first pair that failed, or None, so a scan where
-    every pair failed can say why in its log line.
+    Pairs Binance cannot supply are left out of the dict, a pair that has
+    stopped trading included. The second value is the reason code of the
+    first pair that failed, or None, so a scan where every pair failed can
+    say why in its log line.
 
     Never raises for an upstream failure: `EnrichmentFailed` is caught per
     pair. Anything else is a bug in our code and raises.
 
-    `transport` exists for tests, as in `get_market_context`.
+    `transport` and `now` exist for tests, as in `get_market_context`.
     """
     settings = get_settings()
+    now = now or datetime.now(UTC)
     async with httpx.AsyncClient(
         base_url=settings.binance_base_url,
         timeout=settings.http_timeout_seconds,
         transport=transport,
     ) as client:
         results = await asyncio.gather(
-            *(fetch_klines(symbol, client) for symbol in WATCHLIST), return_exceptions=True
+            *(fetch_klines(symbol, client, now) for symbol in WATCHLIST), return_exceptions=True
         )
 
     contexts: dict[str, MarketContext] = {}

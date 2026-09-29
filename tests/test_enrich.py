@@ -13,16 +13,20 @@ in the data, not described.
 Failures a fixture cannot hold — a timeout, a refused connection, a 500 —
 are simulated at the transport, the only place they can honestly be made.
 No price or volume in this file is invented.
+
+A halted pair is the same recorded response read later: only the clock
+moves, never the data.
 """
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 
-from app.enrich import LIMIT, compute_context, get_market_context
+from app.enrich import LIMIT, MAX_BAR_AGE, compute_context, get_market_context
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KLINES_BODY = (FIXTURES / "binance_klines_btcusdt_1d.json").read_bytes()
@@ -31,6 +35,9 @@ INVALID_SYMBOL_BODY = (FIXTURES / "binance_error_invalid_symbol.json").read_byte
 ROWS = json.loads(KLINES_BODY)
 CLOSES = [float(row[4]) for row in ROWS]
 VOLUMES = [float(row[5]) for row in ROWS]
+
+RECORDED_AT = datetime(2026, 9, 10, 11, 21, 25, tzinfo=UTC)
+NEWEST_OPEN = datetime(2026, 9, 10, tzinfo=UTC)  # row 22, the day being recorded
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +129,7 @@ async def test_recorded_response_becomes_market_context(
     seen: list[httpx.Request] = []
 
     context = await get_market_context(
-        "BTCUSDT", "alert-1", transport=serve(200, KLINES_BODY, seen)
+        "BTCUSDT", "alert-1", transport=serve(200, KLINES_BODY, seen), now=RECORDED_AT
     )
 
     assert context is not None
@@ -151,6 +158,11 @@ UPSTREAM_FAILURES = [
     pytest.param(
         serve(200, json.dumps(ROWS[:5]).encode()), "binance_short_history", id="short-history"
     ),
+    pytest.param(
+        serve(200, json.dumps(ROWS[:-1] + [["not-a-time", *ROWS[-1][1:]]]).encode()),
+        "binance_malformed",
+        id="bad-open-time",
+    ),
 ]
 
 
@@ -158,7 +170,7 @@ UPSTREAM_FAILURES = [
 async def test_upstream_failure_degrades_to_none_with_a_reason_code(
     transport: httpx.MockTransport, reason: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    context = await get_market_context("BTCUSDT", "alert-1", transport=transport)
+    context = await get_market_context("BTCUSDT", "alert-1", transport=transport, now=RECORDED_AT)
 
     assert context is None
     (record,) = enrich_records(caplog)
@@ -169,3 +181,37 @@ async def test_upstream_failure_degrades_to_none_with_a_reason_code(
         "degraded",
         reason,
     )
+
+
+# --- freshness: a halted pair still answers, with its last 22 bars ---------
+
+
+def test_the_fixture_newest_bar_is_the_day_it_was_recorded() -> None:
+    """The two tests below are only as honest as this date."""
+    assert datetime.fromtimestamp(ROWS[-1][0] / 1000, UTC) == NEWEST_OPEN
+
+
+async def test_newest_bar_up_to_25_hours_old_is_current() -> None:
+    """01:00 UTC the next day, before that day's bar exists: still current."""
+    context = await get_market_context(
+        "BTCUSDT", "alert-1", transport=serve(200, KLINES_BODY), now=NEWEST_OPEN + MAX_BAR_AGE
+    )
+
+    assert context is not None
+
+
+async def test_older_newest_bar_means_the_pair_stopped_trading(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """How TONUSDT answered from July 2026 on: 22 well-formed rows whose
+    newest is the day trading was halted. One second past the limit."""
+    context = await get_market_context(
+        "BTCUSDT",
+        "alert-1",
+        transport=serve(200, KLINES_BODY),
+        now=NEWEST_OPEN + MAX_BAR_AGE + timedelta(seconds=1),
+    )
+
+    assert context is None
+    (record,) = enrich_records(caplog)
+    assert (record.outcome, record.reason) == ("degraded", "binance_stale")

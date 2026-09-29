@@ -14,6 +14,7 @@ Three functions, one direction of travel:
 
 import logging
 import time
+from datetime import UTC, datetime, timedelta
 from statistics import fmean
 
 import httpx
@@ -28,8 +29,17 @@ KLINES_PATH = "/api/v3/klines"
 INTERVAL = "1d"  # Daily whatever the alert's timeframe: the context the alert lacks.
 LIMIT = 22  # 20 baseline days + the newest closed day + today's forming bar.
 
+# The oldest the newest daily bar may be. For a pair that is trading, the
+# newest bar is today's; the extra hour covers the first minutes after
+# 00:00 UTC, before today's bar exists. A halted pair keeps serving its last
+# 22 bars as if nothing happened: TONUSDT, halted on 2026-06-30, still
+# answered with June's volume three months later.
+MAX_BAR_AGE = timedelta(hours=25)
+
 # Positions in a Binance kline row. Prices and volumes arrive as JSON
-# strings, not numbers, so no decimal precision is lost in transit.
+# strings, not numbers, so no decimal precision is lost in transit. The open
+# time is a number: milliseconds since the epoch, UTC.
+_OPEN_TIME = 0
 _CLOSE = 4
 _VOLUME = 5
 
@@ -46,11 +56,14 @@ class EnrichmentFailed(Exception):
         self.reason = reason
 
 
-async def fetch_klines(symbol: str, client: httpx.AsyncClient) -> tuple[list[float], list[float]]:
+async def fetch_klines(
+    symbol: str, client: httpx.AsyncClient, now: datetime
+) -> tuple[list[float], list[float]]:
     """Return `(closes, volumes)` for the last `LIMIT` daily bars, oldest first.
 
     Both lists are exactly `LIMIT` long. The last element of each is today's
-    bar, which is still forming.
+    bar, which is still forming. `now` is the current time, timezone-aware;
+    the newest bar must have opened within `MAX_BAR_AGE` of it.
 
     Raises `EnrichmentFailed` with one of these reason codes:
 
@@ -60,6 +73,8 @@ async def fetch_klines(symbol: str, client: httpx.AsyncClient) -> tuple[list[flo
                                limited, 451 restricted region, 5xx outage
         binance_malformed      a 200 that is not the JSON array of rows we expect
         binance_short_history  fewer than LIMIT rows: listed under 22 days ago
+        binance_stale          the newest bar is older than MAX_BAR_AGE: the
+                               pair has stopped trading
     """
     params = {"symbol": symbol, "interval": INTERVAL, "limit": LIMIT}
     try:
@@ -86,8 +101,15 @@ async def fetch_klines(symbol: str, client: httpx.AsyncClient) -> tuple[list[flo
     try:
         closes = [float(row[_CLOSE]) for row in rows]
         volumes = [float(row[_VOLUME]) for row in rows]
-    except (ValueError, TypeError, IndexError, KeyError) as e:
+        newest_open = datetime.fromtimestamp(rows[-1][_OPEN_TIME] / 1000, UTC)
+    # OverflowError and OSError: an open time too large for a datetime.
+    except (ValueError, TypeError, IndexError, KeyError, OverflowError, OSError) as e:
         raise EnrichmentFailed("binance_malformed") from e
+
+    # Twenty-two well-formed rows pass every check above and can still be
+    # months old. Shape is not freshness.
+    if now - newest_open > MAX_BAR_AGE:
+        raise EnrichmentFailed("binance_stale")
     return closes, volumes
 
 
@@ -133,6 +155,7 @@ async def get_market_context(
     symbol: str,
     alert_id: str,
     transport: httpx.AsyncBaseTransport | None = None,
+    now: datetime | None = None,
 ) -> MarketContext | None:
     """Return market context for one alert, or None if Binance can't supply it.
 
@@ -144,8 +167,9 @@ async def get_market_context(
 
     Logs exactly one line per call, outcome "ok" or "degraded".
 
-    `transport` exists for tests, which pass an `httpx.MockTransport`
-    serving recorded responses. Production leaves it None.
+    `transport` and `now` exist for tests, which pass an `httpx.MockTransport`
+    serving recorded responses and the time they were recorded. Production
+    leaves both None, and `now` becomes the current time in UTC.
     """
     settings = get_settings()
     started = time.perf_counter()
@@ -158,7 +182,7 @@ async def get_market_context(
             timeout=settings.http_timeout_seconds,
             transport=transport,
         ) as client:
-            closes, volumes = await fetch_klines(symbol, client)
+            closes, volumes = await fetch_klines(symbol, client, now or datetime.now(UTC))
         context = compute_context(closes, volumes)
     except EnrichmentFailed as e:
         reason = e.reason

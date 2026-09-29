@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 RECORDED = json.loads((FIXTURES / "demo_watchlist_contexts.json").read_bytes())
 WATCHLIST_CONTEXTS = {s: MarketContext(**c) for s, c in RECORDED["contexts"].items()}
 KLINES_BODY = (FIXTURES / "binance_klines_btcusdt_1d.json").read_bytes()
+KLINES_RECORDED_AT = datetime(2026, 9, 10, 11, 21, 25, tzinfo=UTC)  # as in test_enrich.py
 INVALID_SYMBOL_BODY = (FIXTURES / "binance_error_invalid_symbol.json").read_bytes()
 _REPLY = json.loads((FIXTURES / "anthropic_brief_btcusdt_low_volume.json").read_bytes())
 BRIEF = SignalBrief.model_validate_json(_REPLY["content"][0]["text"])
@@ -340,12 +342,29 @@ async def test_scan_keeps_the_pairs_that_answer_and_names_the_first_failure() ->
             return httpx.Response(200, content=KLINES_BODY)
         return httpx.Response(400, content=INVALID_SYMBOL_BODY)
 
-    contexts, failure = await REAL_SCAN(transport=httpx.MockTransport(handler))
+    contexts, failure = await REAL_SCAN(
+        transport=httpx.MockTransport(handler), now=KLINES_RECORDED_AT
+    )
 
     assert sorted(asked) == sorted(demo.WATCHLIST)
     assert list(contexts) == ["BTCUSDT"]
     assert contexts["BTCUSDT"].volume_vs_20d_avg == pytest.approx(0.7739972486180567, rel=1e-9)
     assert failure == "binance_status_400"
+
+
+async def test_scan_skips_a_pair_that_stopped_trading() -> None:
+    """The recorded klines read three months on, as TONUSDT's were: every
+    pair answers with well-formed rows, and none of them is current."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=KLINES_BODY)
+
+    months_later = KLINES_RECORDED_AT + timedelta(days=91)
+
+    assert await REAL_SCAN(transport=httpx.MockTransport(handler), now=months_later) == (
+        {},
+        "binance_stale",
+    )
 
 
 async def test_scan_with_every_pair_failing_returns_nothing_and_why() -> None:
