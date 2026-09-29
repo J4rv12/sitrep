@@ -74,12 +74,14 @@ SCENARIOS = ("breakout", "weak", "malformed")
 # Liquid pairs, each listed for years and still actively traded. Not a list of
 # the whole market: the quietest pairs there are the ones being delisted or
 # renamed, whose volume is low because trading has stopped, not because a
-# signal is weak.
+# signal is weak. All TRADING with a current daily bar on 2026-09-29. TONUSDT
+# was dropped that day: halted since 2026-06-30, it had been answering with
+# June's bars, and `fetch_klines` now refuses those as `binance_stale`.
 WATCHLIST = (
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT",
-    "LTCUSDT", "TRXUSDT", "TONUSDT", "BCHUSDT", "NEARUSDT",
-    "UNIUSDT", "SUIUSDT", "ARBUSDT", "ATOMUSDT", "XLMUSDT",
+    "LTCUSDT", "TRXUSDT", "BCHUSDT", "NEARUSDT", "UNIUSDT",
+    "SUIUSDT", "ARBUSDT", "ATOMUSDT", "XLMUSDT",
 )  # fmt: skip
 
 # A clean breakout is picked from pairs within this distance of their 20MA.

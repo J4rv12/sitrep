@@ -1,13 +1,14 @@
 """The demo endpoint: refusals before the stream, three events in order, and
 nothing delivered.
 
-`demo_watchlist_contexts.json` holds market context for the 20 watchlist pairs,
+`demo_watchlist_contexts.json` holds market context for the 19 watchlist pairs,
 computed by `compute_context` from live Binance responses at
-2026-09-24T14:45:59Z. That day only two of the 20 traded below their 20-day
-average volume; on the first twelve pairs alone, none did. That is why the
-watchlist is twenty pairs long. The brief is the recorded Claude reply
-tests/test_llm.py uses, and the klines are the recorded BTCUSDT fixture
-tests/test_enrich.py uses. Nothing here is invented.
+2026-09-24T14:45:59Z. That day only ARB traded below its 20-day average volume,
+and none of the twelve largest pairs did, which is why the watchlist is wider
+than those twelve. The recording also had TONUSDT, removed on 2026-09-29: it
+was halted in June, so its entry was June's data, not that day's. The brief is
+the recorded Claude reply tests/test_llm.py uses, and the klines are the
+recorded BTCUSDT fixture tests/test_enrich.py uses. Nothing here is invented.
 
 Most tests replace the four network-facing names in `demo` and read the whole
 stream through TestClient. The latency test drives the ASGI app directly, for
@@ -28,6 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
+from app.enrich import compute_context
 from app.main import app
 from app.routes import alerts, demo
 from app.schemas import AlertPayload, MarketContext, SignalBrief
@@ -240,12 +242,16 @@ def test_breakout_falls_back_to_every_pair_when_all_are_stretched() -> None:
 
 
 def test_weak_is_the_lowest_volume() -> None:
-    """TON, at 0.63x, was one of only two pairs below average that day."""
-    assert demo.pick_symbol("weak", WATCHLIST_CONTEXTS) == "TONUSDT"
+    """ARB, at 0.95x, was the only pair below average that day."""
+    assert demo.pick_symbol("weak", WATCHLIST_CONTEXTS) == "ARBUSDT"
 
 
 def test_condition_names_the_side_of_the_20ma_price_is_on() -> None:
-    below = demo.demo_alert("TONUSDT", WATCHLIST_CONTEXTS["TONUSDT"])  # -2.4%
+    """Every pair was above its 20MA on the watchlist's recorded day, so the
+    below case uses the recorded BTCUSDT klines: -0.9% on 2026-09-10."""
+    rows = json.loads(KLINES_BODY)
+    btc = compute_context([float(r[4]) for r in rows], [float(r[5]) for r in rows])
+    below = demo.demo_alert("BTCUSDT", btc)
     above = demo.demo_alert("LINKUSDT", WATCHLIST_CONTEXTS["LINKUSDT"])  # +4.7%
 
     assert (below.condition, above.condition) == ("close below 20MA", "close above 20MA")

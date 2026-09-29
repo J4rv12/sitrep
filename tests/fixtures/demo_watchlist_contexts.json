@@ -1,6 +1,7 @@
 {
   "recorded_at": "2026-09-24T14:45:59Z",
   "source": "app.enrich.compute_context over live GET https://data-api.binance.vision/api/v3/klines?symbol=<pair>&interval=1d&limit=22, one request per pair",
+  "removed": "TONUSDT on 2026-09-29: halted on Binance since 2026-06-30, so its entry was June's data, not the recording day's.",
   "contexts": {
     "BTCUSDT": {
       "volume_vs_20d_avg": 1.4165971259082994,
@@ -49,10 +50,6 @@
     "TRXUSDT": {
       "volume_vs_20d_avg": 1.334852819687511,
       "pct_from_20ma": 0.5037002023663606
-    },
-    "TONUSDT": {
-      "volume_vs_20d_avg": 0.6253676230724288,
-      "pct_from_20ma": -2.379499694935932
     },
     "BCHUSDT": {
       "volume_vs_20d_avg": 4.541874026561644,
