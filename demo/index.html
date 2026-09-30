@@ -65,6 +65,13 @@
   /* At least a screen tall, so a tap can scroll the result to the top even
      before the report has arrived to fill it. */
   #result { min-height: 100vh; min-height: 100svh; }
+
+  .server { display: flex; align-items: baseline; gap: 0.45rem; margin: 0.75rem 0 0; }
+  .server-dot { flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--line); }
+  .server[data-state="waking"] .server-dot { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  .server[data-state="ready"] .server-dot { background: var(--accent); }
+  .server[data-state="down"] .server-dot { background: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { .server[data-state="waking"] .server-dot { animation: none; } }
   #result[hidden] { display: none; }
   .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem 1rem; }
   .panel-head { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; justify-content: space-between; margin-bottom: 0.75rem; }
@@ -132,7 +139,10 @@
       <span>A symbol Binance can't read. SitRep delivers the alert without a report instead of failing.</span>
     </button>
   </div>
-  <p class="small muted" style="margin-top:0.75rem">Each run uses live market data. Demo runs send nothing to Telegram.</p>
+  <p class="server small muted" id="server" data-state="checking">
+    <span class="server-dot"></span><span id="server-text">Checking the server…</span>
+  </p>
+  <p class="small muted" style="margin-top:0.35rem">Each run uses live market data. Demo runs send nothing to Telegram.</p>
 
   <section id="result" hidden aria-live="polite">
     <h2>Result</h2>
@@ -490,6 +500,42 @@ async function run(scenario, button) {
     setBusy(null);
   }
 }
+
+// --- waking the server on load ---------------------------------------------
+
+// A free Render service sleeps after 15 idle minutes and took 42 s to wake
+// when measured. The keep-warm workflow pings it every 5 minutes; this ping
+// covers the times GitHub runs that late, and starts the wake while the
+// visitor is still reading rather than when they tap.
+async function warmUp() {
+  const box = document.getElementById("server");
+  const text = document.getElementById("server-text");
+  const started = performance.now();
+  const ticker = setInterval(() => {
+    const seconds = Math.floor((performance.now() - started) / 1000);
+    if (seconds >= 2) {
+      box.dataset.state = "waking";
+      text.textContent = `Server waking up · ${seconds} s. It sleeps when idle on free hosting, and this takes up to a minute.`;
+    }
+  }, 500);
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), TIMEOUT_MS);
+  try {
+    const response = await fetch(`${API}/healthz`, { cache: "no-store", signal: abort.signal });
+    const ms = performance.now() - started;
+    box.dataset.state = response.ok ? "ready" : "down";
+    text.textContent = !response.ok ? `Server answered ${response.status}.`
+      : ms > SLOW_START_MS ? `Server ready · woke in ${formatMs(ms)}` : "Server ready";
+  } catch {
+    box.dataset.state = "down";
+    text.textContent = "Server not reachable right now. Runs may fail until it is.";
+  } finally {
+    clearInterval(ticker);
+    clearTimeout(timeout);
+  }
+}
+
+warmUp();
 </script>
 </body>
 </html>
