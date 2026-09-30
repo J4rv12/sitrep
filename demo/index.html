@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SitRep demo</title>
+<meta name="description" content="Fire a sample trading alert and watch SitRep turn it into a short situation report, live.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%234f5bd5'/%3E%3Cpath d='M4 10.5l2.5-3 2 2L12 5' stroke='white' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f3;
+    --surface: #ffffff;
+    --text: #1b1d21;
+    --muted: #5b616b;
+    --line: #e2e2dc;
+    --accent: #4f5bd5;
+    --accent-soft: #eceefd;
+    --notice: #fff6e0;
+    --notice-line: #ecd9a4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111317;
+      --surface: #1a1d23;
+      --text: #e8e9ec;
+      --muted: #9aa0aa;
+      --line: #2c3038;
+      --accent: #8e99ff;
+      --accent-soft: #23284a;
+      --notice: #2e2816;
+      --notice-line: #5c4f24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 42rem; margin: 0 auto; padding: 2.5rem 16px 3rem; }
+  h1 { font-size: 1.9rem; letter-spacing: -0.02em; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.05rem; margin: 2.25rem 0 0.75rem; }
+  p { margin: 0 0 0.9rem; }
+  .lede { font-size: 1.1rem; color: var(--muted); margin-bottom: 1.25rem; }
+  .muted { color: var(--muted); }
+  .small { font-size: 0.88rem; }
+
+  .scenarios { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+  .scenario {
+    text-align: left; font: inherit; color: inherit; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 0.9rem 1rem; display: grid; gap: 0.25rem;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .scenario:hover:not(:disabled) { border-color: var(--accent); }
+  .scenario:active:not(:disabled) { transform: translateY(1px); }
+  .scenario:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .scenario:disabled { cursor: progress; opacity: 0.55; }
+  .scenario[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); opacity: 1; }
+  .scenario strong { font-size: 1rem; }
+  .scenario span { font-size: 0.88rem; color: var(--muted); }
+
+  /* At least a screen tall, so a tap can scroll the result to the top even
+     before the report has arrived to fill it. */
+  #result { min-height: 100vh; min-height: 100svh; }
+  #result[hidden] { display: none; }
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem 1rem; }
+  .panel-head { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: baseline; justify-content: space-between; margin-bottom: 0.75rem; }
+  .panel-head h3 { margin: 0; font-size: 1.05rem; }
+  .tag { font-size: 0.78rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+  .notice { background: var(--notice); border: 1px solid var(--notice-line); border-radius: 8px; padding: 0.6rem 0.75rem; margin-bottom: 0.9rem; font-size: 0.92rem; }
+
+  ol.steps { list-style: none; margin: 0; padding: 0; }
+  .step { display: grid; grid-template-columns: 1.1rem 1fr auto; gap: 0 0.7rem; padding: 0.7rem 0; border-top: 1px solid var(--line); }
+  .step:first-child { border-top: 0; padding-top: 0.2rem; }
+  .dot { width: 0.7rem; height: 0.7rem; margin-top: 0.4rem; border-radius: 50%; border: 2px solid var(--line); }
+  .step[data-state="done"] .dot { background: var(--accent); border-color: var(--accent); }
+  .step[data-state="skipped"] .dot { border-style: dashed; border-color: var(--muted); }
+  .step[data-state="waiting"] .dot { border-color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.3; } }
+  @media (prefers-reduced-motion: reduce) { .step[data-state="waiting"] .dot { animation: none; } }
+  .step-body { min-width: 0; }
+  .step-title { font-weight: 600; }
+  .step-detail { color: var(--muted); font-size: 0.92rem; overflow-wrap: anywhere; }
+  .time { font-variant-numeric: tabular-nums; font-size: 0.88rem; color: var(--muted); white-space: nowrap; padding-top: 0.1rem; }
+  .step[data-state="done"] .time { color: var(--text); }
+
+  .brief { margin-top: 0.35rem; color: var(--text); }
+  .brief .headline { font-weight: 600; margin: 0.35rem 0; }
+  .brief ul { margin: 0; padding-left: 1.1rem; color: var(--text); font-size: 0.95rem; }
+  .brief li { margin: 0.2rem 0; }
+  .meter { display: inline-flex; gap: 3px; vertical-align: middle; margin-right: 0.35rem; }
+  .meter i { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--line); }
+  .meter i.on { background: var(--accent); }
+  .severity { font-size: 0.9rem; }
+
+  .telegram { margin-top: 1rem; }
+  .telegram-label { font-size: 0.85rem; color: var(--muted); margin-bottom: 0.35rem; }
+  .bubble {
+    white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.92rem;
+    background: var(--accent-soft); border-radius: 12px 12px 12px 4px; padding: 0.7rem 0.85rem;
+  }
+
+  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--line); font-size: 0.88rem; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>SitRep</h1>
+    <p class="lede">A trading alert in, a short situation report out, in a few seconds.</p>
+  </header>
+
+  <p>When an alert fires on a chart, SitRep pulls two live numbers from Binance: how today's volume compares with its 20-day average, and how far price sits from its 20-day moving average. Claude turns them into a short, structured report, which goes to Telegram.</p>
+  <p>It describes the context around a signal you defined. It never says buy, sell, or where price is going.</p>
+
+  <h2>Try it</h2>
+  <div class="scenarios">
+    <button class="scenario" type="button" data-scenario="breakout" aria-pressed="false">
+      <strong>Clean breakout</strong>
+      <span>The watchlist coin with the strongest volume that isn't stretched far from its average.</span>
+    </button>
+    <button class="scenario" type="button" data-scenario="weak" aria-pressed="false">
+      <strong>Weak signal</strong>
+      <span>The quietest coin on the watchlist. SitRep should say the move has little behind it.</span>
+    </button>
+    <button class="scenario" type="button" data-scenario="malformed" aria-pressed="false">
+      <strong>Malformed alert</strong>
+      <span>A symbol Binance can't read. SitRep delivers the alert without a report instead of failing.</span>
+    </button>
+  </div>
+  <p class="small muted" style="margin-top:0.75rem">Each run uses live market data. Demo runs send nothing to Telegram.</p>
+
+  <section id="result" hidden aria-live="polite">
+    <h2>Result</h2>
+    <div class="panel" id="panel"></div>
+  </section>
+
+  <noscript><p class="notice">This demo needs JavaScript to call the SitRep server.</p></noscript>
+
+  <footer>
+    <p>SitRep reports context, never advice. <a href="https://github.com/J4rv12/sitrep">Source on GitHub</a></p>
+  </footer>
+</main>
+
+<!-- Real runs, recorded from the live service on the dates they carry. Shown
+     only when a live run cannot happen: this visitor's hourly limit, or the
+     day's Claude budget, is used up. Never edited by hand. -->
+<script type="application/json" id="recorded-runs">
+{
+  "breakout": {
+    "recorded_at": "2026-09-29T08:57:14Z",
+    "alert": {
+      "symbol": "ATOMUSDT",
+      "timeframe": "1h",
+      "condition": "close above 20MA",
+      "bar_time": "2026-09-29T08:57:16Z",
+      "price": null
+    },
+    "context": {
+      "volume_vs_20d_avg": 1.5977325228007415,
+      "pct_from_20ma": 2.7139142882182745
+    },
+    "outcome": "enriched",
+    "brief": {
+      "severity": "high",
+      "headline": "ATOMUSDT closes above 20MA on 1.6x volume and modest price extension.",
+      "observations": [
+        "Volume is 1.6x the 20-day average, showing elevated participation in the move.",
+        "Price is 2.7% above its 20-day moving average, indicating a measured advance without extreme extension.",
+        "The combination of strong volume and moderate price distance suggests the move has backing without stretched valuation."
+      ]
+    },
+    "telegram_text": "<b>ATOMUSDT · 1h · severity: high<\/b>\nclose above 20MA\n\n<b>ATOMUSDT closes above 20MA on 1.6x volume and modest price extension.<\/b>\n• Volume is 1.6x the 20-day average, showing elevated participation in the move.\n• Price is 2.7% above its 20-day moving average, indicating a measured advance without extreme extension.\n• The combination of strong volume and moderate price distance suggests the move has backing without stretched valuation.\n\nBar 2026-09-29T08:57:16+00:00"
+  },
+  "weak": {
+    "recorded_at": "2026-09-29T13:39:10Z",
+    "alert": {
+      "symbol": "ARBUSDT",
+      "timeframe": "1h",
+      "condition": "close above 20MA",
+      "bar_time": "2026-09-29T13:39:11Z",
+      "price": null
+    },
+    "context": {
+      "volume_vs_20d_avg": 0.7722530092845531,
+      "pct_from_20ma": 11.288926200907735
+    },
+    "outcome": "enriched",
+    "brief": {
+      "severity": "low",
+      "headline": "ARBUSDT close above 20MA on 1h, but volume trails 20-day average.",
+      "observations": [
+        "Volume is 0.8x the 20-day average, indicating thin participation behind the move.",
+        "Price is 11.3% above its 20-day moving average, showing extension into the upper range."
+      ]
+    },
+    "telegram_text": "<b>ARBUSDT · 1h · severity: low<\/b>\nclose above 20MA\n\n<b>ARBUSDT close above 20MA on 1h, but volume trails 20-day average.<\/b>\n• Volume is 0.8x the 20-day average, indicating thin participation behind the move.\n• Price is 11.3% above its 20-day moving average, showing extension into the upper range.\n\nBar 2026-09-29T13:39:11+00:00"
+  },
+  "malformed": {
+    "recorded_at": "2026-09-29T08:57:25Z",
+    "alert": {
+      "symbol": "BINANCE:BTCUSDT",
+      "timeframe": "1h",
+      "condition": "close above 20MA",
+      "bar_time": "2026-09-29T08:57:25Z",
+      "price": null
+    },
+    "context": null,
+    "outcome": "unenriched",
+    "brief": null,
+    "telegram_text": "[unenriched] <b>BINANCE:BTCUSDT · 1h<\/b>\nclose above 20MA\n\nBar 2026-09-29T08:57:25+00:00"
+  }
+}
+</script>
+
+<script>
+"use strict";
+
+// The page's own origin decides the server, never a query parameter: a link
+// carrying ?api=... must not be able to point this page at someone else's
+// server and render their text under this address.
+const API = ["localhost", "127.0.0.1"].includes(location.hostname)
+  ? "http://127.0.0.1:8000"
+  : "https://sitrep-f734.onrender.com";
+
+const RECORDED = JSON.parse(document.getElementById("recorded-runs").textContent);
+const TITLES = { breakout: "Clean breakout", weak: "Weak signal", malformed: "Malformed alert" };
+const LEVELS = { low: 1, medium: 2, high: 3 };
+const TIMEOUT_MS = 90_000;
+const SLOW_START_MS = 2_000;
+
+const buttons = [...document.querySelectorAll(".scenario")];
+const section = document.getElementById("result");
+const panel = document.getElementById("panel");
+
+for (const button of buttons) {
+  button.addEventListener("click", () => run(button.dataset.scenario, button));
+}
+
+// --- building the DOM: text only, never markup from the server -------------
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children.filter((c) => c !== null && c !== undefined));
+  return node;
+}
+
+// The Telegram text uses Telegram's HTML mode, where the only tag SitRep
+// emits is <b>. Parse it without running anything and rebuild just text and
+// bold, so nothing else in it, the model's words included, becomes markup.
+function telegramBubble(text) {
+  const parsed = new DOMParser().parseFromString(text, "text/html").body;
+  const bubble = el("div", { className: "bubble" });
+  for (const node of parsed.childNodes) {
+    bubble.append(node.nodeName === "B" ? el("b", { textContent: node.textContent }) : node.textContent);
+  }
+  return bubble;
+}
+
+function formatMs(ms) {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+function formatWhen(iso) {
+  const d = new Date(iso);
+  const day = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+  return `${day}, ${time} UTC`;
+}
+
+function describeAlert(alert) {
+  return `${alert.symbol} · ${alert.timeframe} · ${alert.condition}`;
+}
+
+function describeContext(context) {
+  const volume = `volume ${context.volume_vs_20d_avg.toFixed(2)}× its 20-day average`;
+  const pct = context.pct_from_20ma;
+  const side = pct >= 0 ? "above" : "below";
+  return `${volume}, price ${Math.abs(pct).toFixed(1)}% ${side} its 20-day moving average`;
+}
+
+function briefBlock(brief) {
+  const level = LEVELS[brief.severity] ?? 0;
+  const meter = el("span", { className: "meter", ariaHidden: "true" },
+    ...[1, 2, 3].map((n) => el("i", { className: n <= level ? "on" : "" })));
+  return el("div", { className: "brief" },
+    el("div", { className: "severity" }, meter, `Severity: ${brief.severity}`),
+    el("p", { className: "headline", textContent: brief.headline }),
+    el("ul", {}, ...brief.observations.map((o) => el("li", { textContent: o }))));
+}
+
+// --- one result panel ------------------------------------------------------
+
+function step(title) {
+  const detail = el("div", { className: "step-detail" });
+  const time = el("div", { className: "time" });
+  const body = el("div", { className: "step-body" }, el("div", { className: "step-title", textContent: title }), detail);
+  const node = el("li", { className: "step" }, el("span", { className: "dot" }), body, time);
+  node.dataset.state = "pending";
+  return {
+    node,
+    set(state, detailContent, timeText = "") {
+      node.dataset.state = state;
+      detail.replaceChildren(...[].concat(detailContent ?? []));
+      time.textContent = timeText;
+    },
+    append(content) { body.append(content); },
+  };
+}
+
+function newPanel(scenario, tagText) {
+  const steps = {
+    accepted: step("Alert accepted"),
+    context: step("Market data"),
+    brief: step("Situation report"),
+  };
+  const notice = el("div", { className: "notice", hidden: true });
+  const telegram = el("div", { className: "telegram", hidden: true });
+  const tag = el("span", { className: "tag", textContent: tagText });
+  panel.replaceChildren(
+    el("div", { className: "panel-head" }, el("h3", { textContent: TITLES[scenario] }), tag),
+    notice,
+    el("ol", { className: "steps" }, steps.accepted.node, steps.context.node, steps.brief.node),
+    telegram,
+    el("p", { className: "small muted", style: "margin:0.9rem 0 0" }),
+  );
+  section.hidden = false;
+  // On a phone the three buttons fill the screen and the result would
+  // appear out of sight below them.
+  const smooth = !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  section.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
+  return {
+    steps, tag,
+    footnote: panel.lastElementChild,
+    notice(text) { notice.textContent = text; notice.hidden = false; },
+    telegram(text) {
+      telegram.replaceChildren(
+        el("div", { className: "telegram-label", textContent: "The Telegram message a real alert would send" }),
+        telegramBubble(text));
+      telegram.hidden = false;
+    },
+  };
+}
+
+// Fills the context and report steps from a context event and a result
+// event. Shared by live runs and recorded ones, so both read the same way.
+function showContext(view, scenario, data, timeText) {
+  const alertLine = el("div", { textContent: describeAlert(data.alert) });
+  if (data.context) {
+    view.steps.context.set("done", [alertLine, describeContext(data.context)], timeText);
+  } else if (scenario === "malformed") {
+    view.steps.context.set("skipped", [alertLine,
+      `Binance can't read the symbol ${data.alert.symbol}, so there is no market data. Claude is skipped rather than asked to guess.`], timeText);
+  } else {
+    view.steps.context.set("skipped", [alertLine,
+      "Binance couldn't supply market data just now. Claude is skipped rather than asked to guess."], timeText);
+  }
+}
+
+function showResult(view, data, contextArrived, timeText) {
+  if (data.brief) {
+    view.steps.brief.set("done", briefBlock(data.brief), timeText);
+  } else if (!contextArrived) {
+    view.steps.brief.set("skipped", "No market data means no report. The alert still goes out, tagged [unenriched].", timeText);
+  } else {
+    view.steps.brief.set("skipped", "Claude's answer couldn't be used this time, so the alert goes out without a report rather than not at all.", timeText);
+  }
+  view.telegram(data.telegram_text);
+}
+
+function showRecorded(scenario, why) {
+  const run = RECORDED[scenario];
+  const view = newPanel(scenario, `Recorded run · ${formatWhen(run.recorded_at)}`);
+  view.notice(why);
+  view.steps.accepted.set("done", "The server answered before touching the network.", "recorded");
+  showContext(view, scenario, run, "recorded");
+  showResult(view, run, run.context !== null, "recorded");
+  view.footnote.textContent = "A real run from the live service, recorded on the date above. Not timed: the times on a live run are the point, and these would be stale.";
+}
+
+// --- the server stream -----------------------------------------------------
+
+// Server-sent events, read with fetch rather than EventSource. EventSource
+// reconnects by itself after a dropped connection, and every reconnect would
+// run the scenario, and call Claude, again.
+async function* events(body) {
+  const reader = body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += value;
+    let end;
+    while ((end = buffer.indexOf("\n\n")) !== -1) {
+      const block = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      const fields = {};
+      for (const line of block.split("\n")) {
+        const colon = line.indexOf(": ");
+        fields[line.slice(0, colon)] = line.slice(colon + 2);
+      }
+      yield { event: fields.event, data: JSON.parse(fields.data) };
+    }
+  }
+}
+
+function setBusy(active) {
+  for (const b of buttons) {
+    b.disabled = active !== null;
+    b.setAttribute("aria-pressed", String(b === active));
+  }
+}
+
+async function run(scenario, button) {
+  setBusy(button);
+  const view = newPanel(scenario, "Live run");
+  const started = performance.now();
+  const since = () => performance.now() - started;
+  view.steps.accepted.set("waiting", "Sending the alert…");
+
+  // Until the first event, say how long it has been. A free Render service
+  // sleeps after 15 idle minutes and takes up to a minute to wake; that wait
+  // is shown, not hidden.
+  const ticker = setInterval(() => {
+    const ms = since();
+    if (ms > SLOW_START_MS) {
+      view.steps.accepted.set("waiting",
+        "Waiting for the server. It sleeps after 15 idle minutes on free hosting, and waking takes up to a minute.",
+        `${Math.floor(ms / 1000)} s`);
+    }
+  }, 250);
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), TIMEOUT_MS);
+  let contextArrived = false;
+  let finished = false;
+
+  try {
+    const response = await fetch(`${API}/demo/${scenario}`, { method: "POST", signal: abort.signal });
+    if (response.status === 429) {
+      clearInterval(ticker);
+      showRecorded(scenario, "You've used this hour's live runs from your network. Here is a real run recorded earlier instead.");
+      return;
+    }
+    if (!response.ok) {
+      clearInterval(ticker);
+      const why = response.status === 404 ? "The live demo is switched off right now." : `The server answered ${response.status}.`;
+      view.steps.accepted.set("skipped", why);
+      return;
+    }
+    const where = API.includes("onrender.com") ? " in Singapore" : "";
+    view.footnote.textContent = `Times are measured by this page from your tap, including the round trip to the server${where}.`;
+
+    for await (const { event, data } of events(response.body)) {
+      const timeText = formatMs(since());
+      if (event === "accepted") {
+        clearInterval(ticker);
+        view.steps.accepted.set("done", "The server answered before touching the network.", timeText);
+        view.steps.context.set("waiting", "Fetching live data from Binance…");
+      } else if (event === "context") {
+        contextArrived = data.context !== null;
+        showContext(view, scenario, data, timeText);
+        if (contextArrived) view.steps.brief.set("waiting", "Claude is writing the report…");
+      } else if (event === "result") {
+        finished = true;
+        if (data.outcome === "cap_reached") {
+          showRecorded(scenario, "Today's Claude budget for the demo is used up, so this run stopped before the report. Here is a complete run recorded earlier instead.");
+        } else {
+          showResult(view, data, contextArrived, timeText);
+        }
+      }
+    }
+    if (!finished) {
+      view.steps.brief.set("skipped", "The connection ended before the report arrived. Try again.");
+    }
+  } catch (error) {
+    clearInterval(ticker);
+    const why = error.name === "AbortError"
+      ? `No answer from the server within ${TIMEOUT_MS / 1000} seconds. Try again in a minute.`
+      : "Couldn't reach the server. Check your connection and try again.";
+    const pending = [view.steps.accepted, view.steps.context, view.steps.brief]
+      .find((s) => s.node.dataset.state !== "done" && s.node.dataset.state !== "skipped");
+    (pending ?? view.steps.brief).set("skipped", why);
+  } finally {
+    clearInterval(ticker);
+    clearTimeout(timeout);
+    setBusy(null);
+  }
+}
+</script>
+</body>
+</html>
