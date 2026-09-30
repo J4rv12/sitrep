@@ -150,7 +150,7 @@ sitrep/
 ├── demo/                # static page for GitHub Pages
 ├── tests/
 ├── docs/architecture.png
-├── .github/workflows/ci.yml
+├── .github/workflows/   # ci.yml (ruff + pytest), pages.yml (publishes demo/)
 ├── .env.example
 ├── CLAUDE.md
 └── README.md
