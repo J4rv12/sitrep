@@ -134,6 +134,14 @@ removed: asked to run every 5 minutes, it ran twice in 12 hours. Staying awake u
 Render's 750 free hours a month, so it fits only while SitRep is the workspace's one free
 service; with a second one, pause the monitor overnight.
 
+**The monitor has a second job.** The daily spend cap, the demo's per-IP limit, the dedupe cache
+and the feed all live in the process's memory, and a sleeping service is a stopped process:
+every wake starts all four from empty. While the service was allowed to sleep, the "daily" cap
+was a cap per stretch of being awake, and a visitor got a fresh allowance after every 15 quiet
+minutes. Pausing the monitor brings that back for the paused hours. A deploy, or a restart
+Render does itself, resets them whatever the monitor does. The Console's monthly limit is the
+one bound that survives all of these; confirm it is set before relying on anything else.
+
 ---
 
 ## 6. Repo layout

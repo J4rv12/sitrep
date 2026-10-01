@@ -65,8 +65,10 @@ logger = logging.getLogger(__name__)
 CLIENT_IP_HEADER = "True-Client-IP"
 
 # Process-local, built once at import, like the webhook's dedupe cache. A
-# restart or a free-tier sleep empties it, which forgives at most one hour of
-# one visitor's clicks.
+# restart, a deploy or a free-tier sleep empties it. On a service allowed to
+# sleep, a visitor gets a fresh allowance after every 15 quiet minutes, so the
+# limit means what it says only while the keep-awake monitor runs (CLAUDE.md
+# section 5).
 _limiter = RateLimiter(limit=get_settings().demo_rate_limit_per_hour, window_seconds=3600)
 
 SCENARIOS = ("breakout", "weak", "malformed")

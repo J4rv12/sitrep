@@ -63,8 +63,10 @@ class Settings(BaseSettings):
     # Invariant 6 is one call per alert; a second attempt is allowed only for a
     # response that fails validation or the advice guard. Both are billed.
     llm_max_attempts: int = 2
-    # Per process, so a restart resets it. The hard cap is the monthly spend
-    # limit on SitRep's workspace in the Anthropic Console.
+    # Per process, so a restart resets it, and so do a deploy and a free-tier
+    # sleep. On a service allowed to sleep this is a cap per stretch of being
+    # awake, not per day (CLAUDE.md section 5). The hard cap is the monthly
+    # spend limit on SitRep's workspace in the Anthropic Console.
     daily_spend_cap_usd: float = 1.00
     dedupe_ttl_seconds: int = 300  # Invariant 5: a 5-minute dedupe window.
     # Binance's market-data-only host: public endpoints, no auth, which is all
@@ -77,8 +79,10 @@ class Settings(BaseSettings):
     # not serve it just by existing.
     demo_enabled: bool = False
     # Per visitor IP. Enough to try each scenario three times. It does not
-    # bound spend, the daily cap does; it sets how many visitors it takes to
-    # use that cap up. Lower hurts strangers who share one carrier IP.
+    # bound spend; it sets how many visitors it takes to use the daily cap up.
+    # Both live in memory and start again from empty after a restart, a deploy
+    # or a sleep, so the bound that always holds is the Console's monthly
+    # limit. Lower hurts strangers who share one carrier IP.
     demo_rate_limit_per_hour: int = 10
     # The web pages a browser lets read this service's responses: the demo on
     # GitHub Pages. An origin is scheme and host, no path. Not access control:
