@@ -119,6 +119,7 @@ a React frontend.
 | CI | GitHub Actions — ruff + pytest on push |
 | Market data | Binance public REST |
 | Delivery | Telegram Bot API |
+| Keep-awake ping | UptimeRobot monitor on `/healthz`, every 5 minutes. Set up on their site, not in this repo |
 
 Secrets live in `.env`, gitignored, with `.env.example` committed as placeholders.
 
@@ -126,11 +127,12 @@ Secrets live in `.env`, gitignored, with `.env.example` committed as placeholder
 
 **Cold starts.** Render free services sleep after 15 minutes, and waking took 42 s when
 measured on 2026-09-29, almost all of it Render starting a container. That is longer than a
-visitor waits after tapping, so a ping on page load alone was not enough. `keep-warm.yml` pings
-`GET /healthz` every 5 minutes; the demo page still pings it on load, which covers the times
-GitHub runs the schedule late. Staying awake uses about 730 of Render's 750 free hours a month:
-it fits only while SitRep is the workspace's one free service. The workflow says how to narrow
-it.
+visitor waits after tapping, so a ping on page load alone was not enough. An UptimeRobot monitor
+pings `/healthz` every 5 minutes and keeps the service awake; the demo page still pings it on
+load, and shows the wait when there is one. A scheduled GitHub workflow was tried first and
+removed: asked to run every 5 minutes, it ran twice in 12 hours. Staying awake uses about 730 of
+Render's 750 free hours a month, so it fits only while SitRep is the workspace's one free
+service; with a second one, pause the monitor overnight.
 
 ---
 
@@ -154,7 +156,7 @@ sitrep/
 ├── demo/                # static page for GitHub Pages
 ├── tests/
 ├── docs/architecture.png
-├── .github/workflows/   # ci.yml (ruff + pytest), pages.yml (publishes demo/), keep-warm.yml
+├── .github/workflows/   # ci.yml (ruff + pytest), pages.yml (publishes demo/)
 ├── .env.example
 ├── CLAUDE.md
 └── README.md
@@ -213,8 +215,8 @@ triples the timeline. Push back hard if it comes up.
 ## 8. Deferred
 
 Docker, Discord as a second delivery channel, HMAC body signing, richer features such as ATR, and
-a provider abstraction. (A keep-warm cron was deferred here until the measured 42 s cold start;
-see section 5.)
+a provider abstraction. (A keep-warm ping was deferred here until the cold start was measured
+at 42 s; section 5 says what does it now.)
 
 Also deferred: **adaptive enrichment**, where the model selects *which* context to fetch based
 on alert type — volume spike pulls order-book depth, MA cross pulls higher-timeframe trend, gap

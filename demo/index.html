@@ -504,9 +504,9 @@ async function run(scenario, button) {
 // --- waking the server on load ---------------------------------------------
 
 // A free Render service sleeps after 15 idle minutes and took 42 s to wake
-// when measured. The keep-warm workflow pings it every 5 minutes; this ping
-// covers the times GitHub runs that late, and starts the wake while the
-// visitor is still reading rather than when they tap.
+// when measured. An uptime monitor pings it every 5 minutes to keep it
+// awake; this ping covers the times that fails, and starts the wake while
+// the visitor is still reading rather than when they tap.
 async function warmUp() {
   const box = document.getElementById("server");
   const text = document.getElementById("server-text");
