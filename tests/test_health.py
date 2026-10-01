@@ -17,3 +17,9 @@ def test_healthz_returns_ok() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_healthz_answers_head() -> None:
+    """What an uptime monitor sends by default. A 405 here would have the
+    monitor report a healthy service as down."""
+    assert client.head("/healthz").status_code == 200
