@@ -1,4 +1,4 @@
-.PHONY: setup run test lint
+.PHONY: setup run test lint eval eval-record
 
 PY := .venv/bin/python
 
@@ -15,3 +15,13 @@ test:
 lint:
 	$(PY) -m ruff check .
 	$(PY) -m ruff format --check .
+
+# Offline and free: replays eval/recordings.jsonl. Replay never authenticates,
+# so the secrets are placeholders and this runs on a clone with no .env.
+eval:
+	WEBHOOK_TOKEN=offline-replay-placeholder-not-a-secret ANTHROPIC_API_KEY=offline \
+	TELEGRAM_BOT_TOKEN=offline TELEGRAM_CHAT_ID=offline $(PY) -m eval.run_eval
+
+# Online and billed, about $$0.05: calls Claude with the key in .env.
+eval-record:
+	$(PY) -m eval.run_eval --record

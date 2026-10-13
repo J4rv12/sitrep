@@ -23,15 +23,40 @@ recorded:
 The `summarise` tests further down build their results by hand. The latencies
 and costs in them are inputs for arithmetic, picked to be exact in binary so
 sums can be compared without rounding. They are not recordings.
+
+The record and replay tests at the bottom use the one real Claude reply the
+suite already has, the fixture tests/test_llm.py describes. They record it
+offline, through the `Recorder` over a transport that serves the fixture, so
+its latency there is not a real one and only its shape is checked.
 """
 
+import asyncio
 import json
 from pathlib import Path
 
+import anthropic
+import httpx2
 import pytest
 
-from eval.run_eval import Attempt, CaseResult, Rate, percentile, summarise
+from app import llm
+from app.enrich import compute_context
+from app.schemas import AlertPayload, SignalBrief
+from eval import run_eval
+from eval.run_eval import (
+    Attempt,
+    CaseResult,
+    Rate,
+    Recorder,
+    Replay,
+    RunFailed,
+    percentile,
+    record_cases,
+    replay_cases,
+    run_case,
+    summarise,
+)
 
+FIXTURES = Path(__file__).parent / "fixtures"
 DATASET = Path(__file__).parent.parent / "eval" / "dataset.jsonl"
 CASES = [json.loads(line) for line in DATASET.read_text(encoding="utf-8").splitlines()]
 
@@ -191,3 +216,258 @@ def test_a_run_with_no_claude_calls_has_no_latency_or_cost() -> None:
         assert summary.latency_p50_ms is None
         assert summary.latency_p95_ms is None
         assert summary.median_cost_usd is None
+
+
+# --- record and replay ------------------------------------------------------
+
+REPLY = json.loads((FIXTURES / "anthropic_brief_btcusdt_low_volume.json").read_bytes())
+_KLINES = json.loads((FIXTURES / "binance_klines_btcusdt_1d.json").read_bytes())
+CONTEXT = compute_context([float(r[4]) for r in _KLINES], [float(r[5]) for r in _KLINES])
+ALERT = AlertPayload(
+    symbol="BTCUSDT", timeframe="1h", condition="close below 20MA", bar_time="2026-09-10T10:00:00Z"
+)
+
+
+async def brief_over(
+    transport: httpx2.AsyncBaseTransport, alert: AlertPayload = ALERT
+) -> SignalBrief | None:
+    """Run the real `generate_brief` on a real SDK client over `transport`."""
+    client = anthropic.AsyncAnthropic(
+        api_key="sk-ant-test-not-a-real-key",
+        max_retries=0,
+        http_client=anthropic.DefaultAsyncHttpxClient(transport=transport),
+    )
+    return await llm.generate_brief(
+        alert, CONTEXT, "test-alert", client=client, ledger=llm.SpendLedger(cap_usd=1.0)
+    )
+
+
+async def recorded_lines() -> list[dict[str, object]]:
+    """One exchange as recordings.jsonl would hold it, for a case called c1."""
+    recorder = Recorder(httpx2.MockTransport(lambda request: httpx2.Response(200, json=REPLY)))
+    await brief_over(recorder)
+    return [{"case": "c1", **exchange} for exchange in recorder.exchanges]
+
+
+async def test_a_recorded_reply_replays_into_the_same_brief() -> None:
+    lines = await recorded_lines()
+    (line,) = lines
+    assert (line["status"], line["response"]) == (200, REPLY)
+    assert len(str(line["request_sha256"])) == 64
+
+    replay = Replay(lines)
+    replay.begin("c1")
+    brief = await brief_over(httpx2.MockTransport(replay))
+
+    assert brief == SignalBrief.model_validate_json(REPLY["content"][0]["text"])
+    assert replay.served == lines
+    assert replay.problems == []
+
+
+async def test_replay_refuses_a_request_that_changed_since_recording() -> None:
+    """A different condition stands in for an edited prompt: both change the request."""
+    replay = Replay(await recorded_lines())
+    replay.begin("c1")
+
+    brief = await brief_over(
+        httpx2.MockTransport(replay), ALERT.model_copy(update={"condition": "close above 20MA"})
+    )
+
+    assert brief is None
+    assert replay.served == []
+    assert replay.problems == ["c1: the request has changed since it was recorded"]
+
+
+async def test_replay_refuses_to_answer_more_often_than_was_recorded() -> None:
+    replay = Replay(await recorded_lines())
+    replay.begin("c1")
+    await brief_over(httpx2.MockTransport(replay))
+
+    again = await brief_over(httpx2.MockTransport(replay))
+
+    assert again is None
+    assert replay.problems == ["c1: asked for a reply that was never recorded"]
+
+
+# --- one case through the pipeline ------------------------------------------
+
+REPLY_TEXT = REPLY["content"][0]["text"]
+# The recorded reply with an advice-shaped headline swapped in, as in
+# tests/test_llm.py. The swapped text is written for the test, not model output.
+ADVICE_REPLY = {
+    **REPLY,
+    "content": [
+        {
+            "type": "text",
+            "text": json.dumps({**json.loads(REPLY_TEXT), "headline": "Strong buy setup."}),
+        }
+    ],
+}
+CASE = {
+    "id": "c1",
+    "body": ALERT.model_dump(mode="json"),
+    "context": CONTEXT.model_dump(),
+    "label": {"outcome": "enriched", "severity": "low"},
+}
+
+
+async def run_over(case: dict, *bodies: dict) -> CaseResult:
+    """Run `case` on a client whose transport records `bodies`, served in order."""
+    waiting = iter(bodies)
+    recorder = Recorder(
+        httpx2.MockTransport(lambda request: httpx2.Response(200, json=next(waiting)))
+    )
+    client = anthropic.AsyncAnthropic(
+        api_key="sk-ant-test-not-a-real-key",
+        max_retries=0,
+        http_client=anthropic.DefaultAsyncHttpxClient(transport=recorder),
+    )
+    return await run_case(case, client, llm.SpendLedger(cap_usd=1.0), recorder.exchanges)
+
+
+async def test_a_clean_reply_is_one_attempt_and_an_enriched_outcome() -> None:
+    result = await run_over(CASE, REPLY)
+
+    assert (result.outcome, result.severity, result.reasons) == ("enriched", "low", ())
+    (attempt,) = result.attempts
+    assert (attempt.schema_valid, attempt.guard_fired, attempt.marked_advice) == (True, False, None)
+    usage = REPLY["usage"]
+    assert attempt.cost_usd == llm.cost_usd(usage["input_tokens"], usage["output_tokens"])
+
+
+async def test_a_reply_the_guard_rejects_is_kept_as_its_own_attempt() -> None:
+    result = await run_over(CASE, ADVICE_REPLY, REPLY)
+
+    assert (result.outcome, result.reasons) == ("enriched", ("advice_detected",))
+    assert [(a.schema_valid, a.guard_fired) for a in result.attempts] == [
+        (True, True),
+        (True, False),
+    ]
+
+
+async def test_advice_twice_ships_unenriched() -> None:
+    result = await run_over(CASE, ADVICE_REPLY, ADVICE_REPLY)
+
+    assert (result.outcome, result.severity) == ("unenriched", None)
+    assert result.reasons == ("advice_detected", "advice_detected")
+    assert len(result.attempts) == 2
+
+
+async def test_a_reply_that_breaks_the_schema_is_an_invalid_attempt() -> None:
+    broken = {**REPLY, "content": [{"type": "text", "text": REPLY_TEXT[:40]}]}
+
+    result = await run_over(CASE, broken, REPLY)
+
+    assert [a.schema_valid for a in result.attempts] == [False, True]
+    assert result.reasons == ("llm_invalid_output",)
+
+
+async def test_a_case_without_market_numbers_never_calls_claude() -> None:
+    result = await run_over({**CASE, "context": None})
+
+    assert (result.outcome, result.attempts) == ("unenriched", ())
+    assert result.reasons == ("no_market_context",)
+
+
+async def test_a_body_that_fails_validation_is_rejected() -> None:
+    body = {k: v for k, v in CASE["body"].items() if k != "condition"}
+
+    result = await run_over({**CASE, "body": body})
+
+    assert (result.outcome, result.attempts, result.reasons) == ("rejected", (), ())
+
+
+async def test_an_exception_before_the_pipeline_is_a_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(payload: AlertPayload) -> str:
+        raise RuntimeError("simulated")
+
+    monkeypatch.setattr("eval.run_eval.compute_alert_id", boom)
+
+    result = await run_over(CASE)
+
+    assert (result.outcome, result.reasons) == ("crashed", ("RuntimeError",))
+
+
+# --- the two modes ----------------------------------------------------------
+
+NO_CONTEXT = {
+    **CASE,
+    "id": "c2",
+    "context": None,
+    "label": {"outcome": "unenriched", "severity": None},
+}
+
+
+def serving(*bodies: dict, status: int = 200) -> httpx2.MockTransport:
+    waiting = iter(bodies)
+    return httpx2.MockTransport(lambda request: httpx2.Response(status, json=next(waiting)))
+
+
+async def test_what_record_saves_replay_scores_the_same_way() -> None:
+    cases = [CASE, NO_CONTEXT]
+
+    lines = await record_cases(cases, serving(ADVICE_REPLY, REPLY), "2026-10-10T00:00:00+00:00")
+
+    assert [(line["case"], line["attempt"], line["marked_advice"]) for line in lines] == [
+        ("c1", 1, None),
+        ("c1", 2, None),
+    ]
+    results = await replay_cases(cases, lines)
+    assert [(r.case_id, r.outcome, len(r.attempts)) for r in results] == [
+        ("c1", "enriched", 2),
+        ("c2", "unenriched", 0),
+    ]
+    assert [a.guard_fired for a in results[0].attempts] == [True, False]
+
+
+async def test_record_keeps_nothing_from_a_run_the_api_refused() -> None:
+    refusal = {"type": "error", "error": {"type": "invalid_request_error", "message": "simulated"}}
+
+    with pytest.raises(RunFailed, match="c1 did not get a complete reply"):
+        await record_cases([CASE], serving(refusal, status=400), "2026-10-10T00:00:00+00:00")
+
+
+async def test_replay_stops_on_a_recording_that_no_longer_matches() -> None:
+    lines = await record_cases([CASE], serving(REPLY), "2026-10-10T00:00:00+00:00")
+    edited = {**CASE, "body": {**CASE["body"], "condition": "close above 20MA"}}
+
+    with pytest.raises(RunFailed, match="out of date"):
+        await replay_cases([edited], lines)
+
+
+# --- the command line -------------------------------------------------------
+
+
+async def write_recording(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the module at a one-case dataset and a recording of it under `path`."""
+    lines = await record_cases([CASE], serving(REPLY), "2026-10-10T00:00:00+00:00")
+    (path / "dataset.jsonl").write_text(json.dumps(CASE) + "\n", encoding="utf-8")
+    (path / "recordings.jsonl").write_text(json.dumps(lines[0]) + "\n", encoding="utf-8")
+    monkeypatch.setattr(run_eval, "DATASET", path / "dataset.jsonl")
+    monkeypatch.setattr(run_eval, "RECORDINGS", path / "recordings.jsonl")
+    monkeypatch.setattr("sys.argv", ["run_eval"])
+
+
+async def test_replay_prints_the_score_and_the_replies_still_to_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await write_recording(tmp_path, monkeypatch)
+
+    # `main` starts its own event loop, which cannot be done from inside this one.
+    await asyncio.to_thread(run_eval.main)
+
+    printed = capsys.readouterr().out
+    assert "schema-valid   1 of 1 replies" in printed
+    assert "guard catch    0 of 0 replies marked as advice" in printed
+    assert "1 replies are not marked" in printed
+    assert "c1 attempt 1" in printed and "close below 20MA" in printed
+
+
+async def test_replay_without_a_recording_says_what_to_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await write_recording(tmp_path, monkeypatch)
+    (tmp_path / "recordings.jsonl").unlink()
+
+    with pytest.raises(SystemExit, match="make eval-record"):
+        run_eval.main()
