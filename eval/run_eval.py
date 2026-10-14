@@ -8,7 +8,7 @@ Two modes, because the numbers must be real and the run must be repeatable:
                        to recordings.jsonl.
     make eval          Offline and free. The same code path, but Claude's
                        part is answered from recordings.jsonl. Prints the
-                       score.
+                       score and writes results.md.
 
 A person then marks each saved reply as advice or not, in recordings.jsonl.
 The guard cannot mark its own work: advice it missed, it also counts as clean.
@@ -42,7 +42,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.dedupe import compute_alert_id
-from app.llm import SpendLedger, cost_usd, generate_brief
+from app.llm import PROMPT_VERSION, SpendLedger, cost_usd, generate_brief
 from app.schemas import AlertPayload, MarketContext
 
 Outcome = Literal["rejected", "unenriched", "enriched", "crashed"]
@@ -471,16 +471,174 @@ async def replay_cases(
     return results
 
 
+# --- the report -------------------------------------------------------------
+
+RESULTS = Path(__file__).parent / "results.md"
+
+LIMITS = """\
+## Limits
+
+- **Each case was recorded once.** Claude does not answer the same way every time, so a
+  second recording can score differently. A disagreement on one case is one sample, not a
+  pattern.
+- **Latency is the Claude call alone**, measured from a laptop on the recording day. The
+  deployed service adds Binance and Telegram on top.
+- **Cost is tokens at the list price in `app/config.py`**, per alert, retries included.
+- **Market numbers are real but fixed.** Each case carries numbers computed from Binance's
+  daily bars for its `context_as_of` day. The eval does not call Binance; `enrich.py` has
+  its own tests. A case with no market numbers ships unenriched by construction.
+- **The dataset is balanced on purpose and is not the market's mix.** Across 1,780 pair-days
+  of Binance daily bars (10 pairs, 10 April to 4 October 2026), 58% had below-average
+  volume.
+- **One 10% line for every pair.** Severity labels follow the rule in `tests/test_eval.py`.
+  Pairs differ in how often they stretch that far: BNB on 5.6% of those days, ADA on 23.0%.
+- **No case sits near the 1.0x or 1.5x volume boundaries.** The nearest are 1.23x and 1.65x.
+- **One person wrote the labels and marked the replies.**
+"""
+
+
+def rate_text(rate: Rate) -> str:
+    """Write a rate as its counts, with a percentage only if something was counted."""
+    if rate.total == 0:
+        return "0 of 0"
+    return f"{rate.hits} of {rate.total} ({rate.hits / rate.total:.0%})"
+
+
+def ms_text(value: float | None) -> str:
+    return "no calls" if value is None else f"{value:,.0f} ms"
+
+
+def describe(outcome: str, severity: str | None) -> str:
+    return outcome if severity is None else f"{outcome}, {severity}"
+
+
+def render_results(
+    cases: list[dict[str, Any]],
+    recorded: list[dict[str, Any]],
+    results: list[CaseResult],
+    summary: Summary,
+) -> str:
+    """Write results.md from one replay. Pure: the same inputs give the same text.
+
+    No clock is read, and the only date is the recording's own. That is what
+    lets a test compare the committed file with a fresh replay.
+    """
+    by_id = {case["id"]: case for case in cases}
+    categories = [case["category"] for case in cases]
+    mix = ", ".join(f"{categories.count(c)} {c}" for c in dict.fromkeys(categories))
+    models = ", ".join(sorted({f"`{line['response']['model']}`" for line in recorded}))
+    days = ", ".join(sorted({line["recorded_at"][:10] for line in recorded}))
+    called = sum(1 for result in results if result.attempts)
+    replies = [(r.case_id, n, a) for r in results for n, a in enumerate(r.attempts, start=1)]
+    cost = summary.median_cost_usd
+
+    rows, disagreed = [], []
+    for result in results:
+        case = by_id[result.case_id]
+        context = case["context"]
+        numbers = (
+            "none"
+            if context is None
+            else f"{context['volume_vs_20d_avg']:.2f}x, {context['pct_from_20ma']:+.1f}%"
+        )
+        label = describe(result.expected_outcome, result.expected_severity)
+        got = describe(result.outcome, result.severity)
+        cells = [result.case_id, case["category"], numbers, label, got]
+        cells += [str(len(result.attempts)), ", ".join(result.reasons)]
+        rows.append("| " + " | ".join([*cells, "yes" if label == got else "**no**"]) + " |")
+        if label != got:
+            about = case["note"] or "a plain alert"
+            why = f" ({', '.join(result.reasons)})" if result.reasons else ""
+            disagreed.append(
+                f"- **{result.case_id}**, {about}. Labelled `{label}`, got `{got}`{why}. "
+                f"Market numbers: {numbers}."
+            )
+
+    fired = [f"{case_id} attempt {n}" for case_id, n, a in replies if a.guard_fired]
+    alarms = [f"{c} attempt {n}" for c, n, a in replies if a.guard_fired and not a.marked_advice]
+    missed = [
+        f"{case_id} attempt {n}"
+        for case_id, n, a in replies
+        if a.schema_valid and a.marked_advice and not a.guard_fired
+    ]
+    guard = [f"- The guard fired on {len(fired)} of {len(replies)} replies."]
+    if alarms:
+        guard.append(f"- It fired on replies not marked as advice: {', '.join(alarms)}.")
+    if summary.unmarked:
+        guard.append(
+            f"- {summary.unmarked} replies are not marked yet. The catch rate is unfinished."
+        )
+    elif summary.guard_catch.total == 0:
+        guard.append(
+            "- A person read every reply and marked none as advice, so the guard had nothing "
+            "to catch. **This run does not show whether the guard catches advice.** Its own "
+            "cases are in `tests/test_guards.py`."
+        )
+    else:
+        guard.append(
+            f"- Replies marked as advice that it caught: {rate_text(summary.guard_catch)}."
+        )
+        if missed:
+            guard.append(f"- **Advice it missed, which was delivered: {', '.join(missed)}.**")
+
+    rank = math.ceil(95 * called / 100)
+    lines = [
+        "# Eval results",
+        "",
+        "Written by `make eval` from `eval/recordings.jsonl`. Not edited by hand: a test fails",
+        "if this file and a fresh replay disagree.",
+        "",
+        f"- **What ran:** {len(cases)} labelled alerts ({mix}) through `generate_brief`, the "
+        "code the webhook runs.",
+        f"- **Model and prompt:** {models}, `{PROMPT_VERSION}`.",
+        f"- **Recorded:** {days}. {len(replies)} replies, replayed offline.",
+        "",
+        "## The numbers",
+        "",
+        "| Metric | Result | Counted over |",
+        "|---|---|---|",
+        f"| Schema-valid rate | {rate_text(summary.schema_valid)} "
+        "| Every reply Claude gave, retries included |",
+        f"| Severity agreement | {rate_text(summary.severity_agreement)} "
+        "| Delivered briefs whose label has a severity |",
+        f"| Advice-guard catch rate | {rate_text(summary.guard_catch)} "
+        "| Replies a person marked as advice |",
+        f"| Fallback rate | {rate_text(summary.fallback)} "
+        "| Alerts delivered, with a brief or without |",
+        f"| Latency p50 / p95 | {ms_text(summary.latency_p50_ms)} / "
+        f"{ms_text(summary.latency_p95_ms)} | The {called} alerts that called Claude |",
+        f"| Median cost per alert | {'no calls' if cost is None else f'${cost:.4f}'} "
+        f"| The same {called} alerts |",
+        "",
+        f"Percentiles are by nearest rank: with {called} alerts, p95 is value {rank} of "
+        f"{called} in order" + (", the slowest call." if rank == called else "."),
+        "",
+        "## The guard",
+        "",
+        *guard,
+        "",
+        "## Case by case",
+        "",
+        "| Case | Category | Volume, from 20MA | Label | Got | Replies | Reason codes | Match |",
+        "|---|---|---|---|---|---|---|---|",
+        *rows,
+        "",
+        "## Where it disagreed with the labels",
+        "",
+        *(disagreed or ["- Nowhere."]),
+        "",
+        LIMITS,
+    ]
+    return "\n".join(lines)
+
+
 # --- the command line -------------------------------------------------------
 
 
 def summary_lines(summary: Summary) -> list[str]:
     """Say each number as its counts. A rate with nothing under it stays "0 of 0"."""
 
-    def ms(value: float | None) -> str:
-        return "no calls" if value is None else f"{value:,.0f} ms"
-
-    cost = summary.median_cost_usd
+    cost, ms = summary.median_cost_usd, ms_text
     return [
         "schema-valid   {} of {} replies".format(*summary.schema_valid),
         "severity       {} of {} delivered briefs match the label".format(
@@ -539,10 +697,13 @@ def main() -> None:
         if not RECORDINGS.exists():
             raise RunFailed(f"No {RECORDINGS.name} yet. Run `make eval-record` first.")
         recorded = load_jsonl(RECORDINGS)
-        summary = summarise(asyncio.run(replay_cases(cases, recorded)))
+        results = asyncio.run(replay_cases(cases, recorded))
     except RunFailed as error:
         raise SystemExit(str(error)) from error
+    summary = summarise(results)
+    RESULTS.write_text(render_results(cases, recorded, results, summary), encoding="utf-8")
     print("\n".join(summary_lines(summary)))
+    print(f"\nWrote eval/{RESULTS.name}")
     if summary.unmarked:
         print(
             f"\n{summary.unmarked} replies are not marked, so the guard catch rate is unfinished."

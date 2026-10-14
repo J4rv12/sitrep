@@ -51,6 +51,7 @@ from eval.run_eval import (
     RunFailed,
     percentile,
     record_cases,
+    render_results,
     replay_cases,
     run_case,
     summarise,
@@ -305,6 +306,8 @@ ADVICE_REPLY = {
 }
 CASE = {
     "id": "c1",
+    "category": "normal",
+    "note": "",
     "body": ALERT.model_dump(mode="json"),
     "context": CONTEXT.model_dump(),
     "label": {"outcome": "enriched", "severity": "low"},
@@ -445,6 +448,7 @@ async def write_recording(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (path / "recordings.jsonl").write_text(json.dumps(lines[0]) + "\n", encoding="utf-8")
     monkeypatch.setattr(run_eval, "DATASET", path / "dataset.jsonl")
     monkeypatch.setattr(run_eval, "RECORDINGS", path / "recordings.jsonl")
+    monkeypatch.setattr(run_eval, "RESULTS", path / "results.md")
     monkeypatch.setattr("sys.argv", ["run_eval"])
 
 
@@ -461,6 +465,7 @@ async def test_replay_prints_the_score_and_the_replies_still_to_mark(
     assert "guard catch    0 of 0 replies marked as advice" in printed
     assert "1 replies are not marked" in printed
     assert "c1 attempt 1" in printed and "close below 20MA" in printed
+    assert "| c1 | " in (tmp_path / "results.md").read_text(encoding="utf-8")
 
 
 async def test_replay_without_a_recording_says_what_to_run(
@@ -471,3 +476,46 @@ async def test_replay_without_a_recording_says_what_to_run(
 
     with pytest.raises(SystemExit, match="make eval-record"):
         run_eval.main()
+
+
+# --- the committed recording and results ------------------------------------
+#
+# These three run the real dataset against the real recording, offline. They
+# are what turns "re-run the eval when the prompt changes" from a habit into
+# a failing build.
+
+
+@pytest.fixture(scope="module")
+def committed() -> tuple[list[dict], list[dict], list[CaseResult]]:
+    recorded = run_eval.load_jsonl(run_eval.RECORDINGS)
+    return CASES, recorded, asyncio.run(replay_cases(CASES, recorded))
+
+
+def test_the_recording_still_answers_what_the_pipeline_asks(
+    committed: tuple[list[dict], list[dict], list[CaseResult]],
+) -> None:
+    """Fails with `RunFailed` if the prompt, model, dataset or guard changed without
+    a new recording."""
+    _, recorded, results = committed
+
+    assert sum(len(result.attempts) for result in results) == len(recorded)
+
+
+def test_no_reply_marked_as_advice_was_delivered(
+    committed: tuple[list[dict], list[dict], list[CaseResult]],
+) -> None:
+    """Invariant 2, held against real model output. Every reply has been read."""
+    summary = summarise(committed[2])
+
+    assert summary.unmarked == 0
+    assert summary.guard_catch.hits == summary.guard_catch.total
+
+
+def test_results_md_is_what_a_fresh_replay_writes(
+    committed: tuple[list[dict], list[dict], list[CaseResult]],
+) -> None:
+    cases, recorded, results = committed
+
+    fresh = render_results(cases, recorded, results, summarise(results))
+
+    assert run_eval.RESULTS.read_text(encoding="utf-8") == fresh, "run `make eval` and commit"
