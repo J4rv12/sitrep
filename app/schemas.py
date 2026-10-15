@@ -8,7 +8,7 @@ of one alert. Nothing else travels between modules as a raw dict.
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 ShortText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)]
 
@@ -20,7 +20,7 @@ class AlertPayload(BaseModel):
     to control, and rejecting an unrecognised field would drop a real alert.
 
     Raises `pydantic.ValidationError` on a missing or empty required field,
-    or a `bar_time` that is not a parseable timestamp.
+    or a `bar_time` that is not a parseable timestamp or has no UTC form.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -30,6 +30,22 @@ class AlertPayload(BaseModel):
     condition: str = Field(min_length=1, max_length=200)
     bar_time: datetime
     price: float | None = None
+
+    @field_validator("bar_time")
+    @classmethod
+    def _has_a_utc_form(cls, value: datetime) -> datetime:
+        """Refuse a timestamp that cannot be converted to UTC.
+
+        `0001-01-01T00:00:00+01:00` parses, but in UTC it falls before year 1,
+        which `datetime` cannot hold. `compute_alert_id` converts to UTC, so
+        such an alert used to pass validation and crash there: a 500 instead
+        of a 422. The value is returned as sent; the conversion is only a test.
+        """
+        try:
+            value.astimezone(UTC)
+        except OverflowError as e:
+            raise ValueError("bar_time has no UTC form") from e
+        return value
 
 
 class MarketContext(BaseModel):

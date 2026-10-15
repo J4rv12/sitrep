@@ -248,6 +248,11 @@ def test_json_that_is_not_an_object_is_rejected(payload: bytes) -> None:
         ("timeframe", ""),
         ("condition", ""),
         ("bar_time", "not-a-timestamp"),
+        # Timestamps with no UTC form: the first falls before year 1 in UTC,
+        # the second after year 9999. They used to pass validation and crash
+        # `compute_alert_id`, a 500. Found by eval case e02.
+        ("bar_time", "0001-01-01T00:00:00+01:00"),
+        ("bar_time", "9999-12-31T23:59:59-01:00"),
     ],
 )
 def test_invalid_alert_fields_are_rejected(field: str, value: str) -> None:

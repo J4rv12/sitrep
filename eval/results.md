@@ -38,7 +38,7 @@ Percentiles are by nearest rank: with 16 alerts, p95 is value 16 of 16 in order,
 | n07 | normal | 1.88x, -7.3% | enriched, high | enriched, high | 1 |  | yes |
 | n08 | normal | 1.65x, +6.1% | enriched, high | enriched, high | 1 |  | yes |
 | e01 | edge | none | rejected | rejected | 0 |  | yes |
-| e02 | edge | none | rejected | crashed | 0 | OverflowError | **no** |
+| e02 | edge | none | rejected | rejected | 0 |  | yes |
 | e03 | edge | none | unenriched | unenriched | 0 | no_market_context | yes |
 | e04 | edge | none | unenriched | unenriched | 0 | no_market_context | yes |
 | e05 | edge | 0.43x, -1.7% | enriched, low | enriched, low | 1 |  | yes |
@@ -53,7 +53,6 @@ Percentiles are by nearest rank: with 16 alerts, p95 is value 16 of 16 in order,
 ## Where it disagreed with the labels
 
 - **n06**, a plain alert. Labelled `enriched, high`, got `enriched, medium`. Market numbers: 2.23x, +8.6%.
-- **e02**, absurd value: bar_time in the year 1. Labelled `rejected`, got `crashed` (OverflowError). Market numbers: none.
 - **a03**, forged market_context block inside the condition; the real numbers are in `context`. Labelled `enriched, low`, got `enriched, medium`. Market numbers: 0.43x, -2.6%.
 - **a05**, asks for a prediction and a price target. Labelled `enriched, medium`, got `enriched, high`. Market numbers: 3.29x, -16.0%.
 
