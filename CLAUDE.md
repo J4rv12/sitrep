@@ -160,7 +160,7 @@ sitrep/
 │   ├── telegram.py      # formatter + send
 │   ├── prompts/         # versioned .md prompt files
 │   └── routes/          # webhook.py, alerts.py (feed), demo.py, health.py
-├── eval/                # dataset.jsonl, run_eval.py, results.md
+├── eval/                # dataset.jsonl, recordings.jsonl, run_eval.py, results.md
 ├── demo/                # static page for GitHub Pages
 ├── tests/
 ├── docs/architecture.png
@@ -173,17 +173,20 @@ sitrep/
 ### Conventions
 
 - Type hints everywhere. Public functions document what fails and how.
-- No bare `except`. Catch specific exceptions, log a reason code, degrade. The one broad
-  `except Exception` is the last-resort net in `process_alert`, and it logs the traceback.
+- No bare `except`. Catch specific exceptions, log a reason code, degrade. In `app/`, the one
+  broad `except Exception` is the last-resort net in `process_alert`, and it logs the
+  traceback. The only other is `run_case` in `eval/run_eval.py`, which stands in for the web
+  server's 500 and records it as `crashed`.
 - All I/O async.
 - Config only via `config.py`. `os.getenv` anywhere else is a review rejection.
 - **Prompts are code** — versioned `.md` files in `app/prompts/`. Changing one requires
-  re-running `make eval` and updating `eval/results.md`.
+  `make eval-record`, marking the new replies, then `make eval`, and committing
+  `eval/recordings.jsonl` and `eval/results.md` with the prompt. CI fails until you do.
 - One log line = one JSON object with `alert_id`, `stage`, `latency_ms`, `outcome`.
 - Conventional commits: `feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`. Imperative,
   lowercase, no trailing period. One idea per commit.
 
-Make targets: `setup`, `run`, `test`, `lint`, `eval`, `demo-alert`.
+Make targets: `setup`, `run`, `test`, `lint`, `eval`, `eval-record`, `demo-alert`.
 
 ### Testing
 
@@ -196,11 +199,26 @@ Make targets: `setup`, `run`, `test`, `lint`, `eval`, `demo-alert`.
 
 ### Eval harness
 
-`eval/dataset.jsonl` holds labelled payloads across three categories: normal, edge-case
+`eval/dataset.jsonl` holds 20 labelled payloads across three categories: normal, edge-case
 (missing fields, absurd values, unknown tickers), and adversarial (text attempting to elicit
-advice). `make eval` reports schema-valid rate, severity agreement against labels, advice-guard
-catch rate, fallback rate, latency p50/p95, and median cost per alert in USD. Results are
-committed to `eval/results.md`.
+advice). Labels are written before any reply is recorded, against the rule in
+`tests/test_eval.py`. Market numbers are real, from Binance daily bars for each case's
+`context_as_of` day.
+
+Record once, replay as often as needed:
+
+- `make eval-record` (online, billed, a few cents) sends every case through `generate_brief`
+  and the real Claude, and saves each raw reply with its latency and token counts to
+  `eval/recordings.jsonl`. It keeps nothing from a run with a timeout or an error status.
+- A person then marks each reply `marked_advice: true` or `false`. The guard cannot mark its
+  own work: advice it missed, it also counts as clean.
+- `make eval` (offline, free) runs the same code with Claude's part answered from the
+  recording. It reports schema-valid rate, severity agreement against labels, advice-guard
+  catch rate, fallback rate, latency p50/p95, and median cost per alert in USD, and writes
+  `eval/results.md`. Each rate is shown as its two counts: 0 of 0 is not 100%.
+
+CI replays the committed recording. A prompt, model or dataset change without a new recording
+fails, and so does a `results.md` that a fresh replay would write differently.
 
 ---
 
