@@ -1,0 +1,62 @@
+---
+config:
+  theme: base
+  themeVariables:
+    fontSize: "15px"
+    fontFamily: "Verdana"
+    lineColor: "#94a3b8"
+    clusterBkg: "#f8fafc"
+    clusterBorder: "#e2e8f0"
+    edgeLabelBackground: "#ffffff"
+  flowchart:
+    wrappingWidth: 320
+    curve: basis
+---
+%% SitRep, one alert from TradingView to Telegram. Source of docs/architecture.png:
+%% paste this into https://mermaid.live, then Actions > PNG, and commit both files.
+%% The theme is pinned above so the export is light whatever mode the site is in.
+%% Verdana because it is installed on every Mac and Windows PC. The PNG export
+%% draws the diagram as a standalone image, which can use installed fonts only:
+%% a web font such as mermaid.live's own Recursive never reaches it.
+%% No hyphen in fontFamily: Mermaid drops a value that has one ("Verdana,
+%% sans-serif"), the SVG then names no font, and the PNG comes out in Times.
+%% Edges join the two subgraphs, not nodes inside them: a node linked across a
+%% subgraph's border makes Mermaid ignore that subgraph's direction.
+%% Colour carries meaning, and the README caption says what: blue is SitRep's
+%% code, white pills are outside services, green is the 202, orange is an
+%% outcome other than a clean delivery.
+flowchart LR
+    TV(["TradingView alert<br/>token in the JSON body"]) -->|"POST /webhook"| handler
+
+    subgraph handler["Webhook handler: opens no socket"]
+        direction TB
+        P("parse JSON") --> A("check token<br/>constant-time compare")
+        A --> V("validate alert fields")
+        V --> D{"same alert_id<br/>in the last 5 min?"}
+        D -->|"yes"| DUP("200 duplicate<br/>nothing sent twice")
+        D -->|"no"| ACK("202 Accepted<br/>in under 500 ms")
+    end
+
+    handler -.->|"after the 202,<br/>as a background task"| after
+
+    subgraph after["After the response: seconds, not milliseconds"]
+        direction TB
+        E(["Binance daily klines<br/>volume vs 20-day average<br/>% from the 20MA"])
+        E -->|"two numbers"| L(["Claude Haiku 4.5<br/>one call, at most one retry"])
+        L --> G{"parses into SignalBrief and<br/>passes the advice guard?"}
+        E -->|"Binance failed"| RAW("raw alert<br/>tagged [unenriched]")
+        L -->|"API error or daily cap spent"| RAW
+        G -->|"no, twice"| RAW
+        G -->|"yes: the brief"| TG(["Telegram Bot API"])
+        RAW --> TG
+        TG -->|"recorded, delivered or not"| FEED("feed: last 50 alerts<br/>GET /alerts")
+    end
+
+    classDef ours fill:#eef2ff,stroke:#6366f1,stroke-width:1.5px,color:#1e1b4b
+    classDef service fill:#ffffff,stroke:#0f172a,stroke-width:1.5px,color:#0f172a
+    classDef good fill:#ecfdf5,stroke:#10b981,stroke-width:1.5px,color:#064e3b
+    classDef degraded fill:#fff7ed,stroke:#f97316,stroke-width:1.5px,color:#7c2d12
+    class P,A,V,D,G,FEED ours
+    class TV,E,L,TG service
+    class ACK good
+    class DUP,RAW degraded
