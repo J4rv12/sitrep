@@ -71,10 +71,12 @@ Dev: `pytest`, `pytest-asyncio`, `ruff`.
 
 ### Authentication
 
-A shared secret token in a request header, compared with `hmac.compare_digest`. **Not HMAC
-body signing** — TradingView alert bodies are static text and cannot compute a signature, so a
-bearer token is the correct design here, not merely the simpler one. Constant-time comparison
-still matters.
+A shared secret token, compared with `hmac.compare_digest`. The webhook reads it from the JSON
+body as `token`: TradingView's alert dialog sets the URL and the message text, never a header.
+The feed (`GET /alerts`) reads it from the `X-SitRep-Token` header, because a GET has no body.
+**Not HMAC body signing** — TradingView alert bodies are static text and cannot compute a
+signature, so a static token is the correct design here, not merely the simpler one.
+Constant-time comparison still matters.
 
 ### Market data
 
@@ -186,7 +188,7 @@ sitrep/
 - Conventional commits: `feat:`, `fix:`, `test:`, `docs:`, `chore:`, `refactor:`. Imperative,
   lowercase, no trailing period. One idea per commit.
 
-Make targets: `setup`, `run`, `test`, `lint`, `eval`, `eval-record`, `demo-alert`.
+Make targets: `setup`, `run`, `test`, `lint`, `eval`, `eval-record`.
 
 ### Testing
 
