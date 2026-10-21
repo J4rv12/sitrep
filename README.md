@@ -16,7 +16,7 @@ Render free tier, GitHub Pages
 
 ## One alert, end to end
 
-
+https://github.com/user-attachments/assets/ec8608e1-e257-4b31-9f66-adf19b7a088a
 
 A real alert fired with curl at the deployed service on 22 September 2026. The terminal (left)
 gets `{"status":"accepted"}` back at once; the report lands in Telegram (right) about four
