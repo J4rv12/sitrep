@@ -92,7 +92,7 @@ the recording offline, for free.
 
 ### Why no agent framework
 
-Does anything have to be decided at runtime that can't be decided at design time? And the answer is no. Hence, an agent loop isn't the right choice. The input is always one alert plus two numbers, the output is always a `SignalBrief`, and there's one path. One call plus one retry per alert, that's $0.0018 today, and an agent adds a billed call for every step it takes. An agent would earn its keep if the enrichment is adaptive: choosing which context to fetch for each kind of alert.
+Does anything have to be decided at runtime that can't be decided at design time? And the answer is no. Hence, an agent loop isn't the right choice. The input is always one alert plus two numbers, the output is always a `SignalBrief`, and there's one path. SitRep makes one Claude call per alert, two at most, and the median alert costs $0.0018; an agent adds a billed call for every step it takes. An agent would earn its keep if the enrichment is adaptive: choosing which context to fetch for each kind of alert.
 
 ### Why no queue
 
@@ -138,7 +138,7 @@ make eval              # replays eval/recordings.jsonl, free
 The alert message to paste into TradingView. Use `{{ticker}}`, not `{{exchange}}:{{ticker}}`:
 Binance cannot read the second, and the alert would arrive unenriched.
 
-```json
+```text
 {
   "token": "your WEBHOOK_TOKEN",
   "symbol": "{{ticker}}",
